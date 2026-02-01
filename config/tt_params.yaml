@@ -1,0 +1,36 @@
+trajectory_tt_publisher:
+  ros__parameters:
+    taskFile: ""
+    urdfFile: ""
+    libFolder: ""
+    robotName: "mobile_manipulator"
+
+    publishRate: 20.0
+    horizon: 2.0
+    dt: 0.05
+    amplitude: 0.20
+    frequency: 0.10
+
+    axisX: 0.0
+    axisY: 0.0
+    axisZ: 1.0
+
+trajectory_progress_monitor:
+  ros__parameters:
+    taskFile: ""
+    urdfFile: ""
+    libFolder: ""
+    robotName: "mobile_manipulator"
+
+    monitorRate: 50.0
+    window: 20
+    maxBacktrack: 5
+
+    onTrackPos: 0.005
+    onTrackOriDeg: 5.0
+
+    divergedPos: 0.03
+    divergedHoldSec: 0.5
+
+    finishProgress: 0.98
+    finishPos: 0.005

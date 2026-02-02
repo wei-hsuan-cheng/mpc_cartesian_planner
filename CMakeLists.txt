@@ -18,7 +18,7 @@ find_package(ocs2_core REQUIRED)
 find_package(ocs2_mpc REQUIRED)
 find_package(ocs2_msgs REQUIRED)
 find_package(ocs2_ros_interfaces REQUIRED)
-find_package(ocs2_mobile_manipulator REQUIRED)
+find_package(mobile_manipulator_mpc REQUIRED)
 find_package(ocs2_pinocchio_interface REQUIRED)
 
 find_package(pinocchio REQUIRED)
@@ -37,7 +37,7 @@ add_library(mpc_cartesian_planner_lib
 ament_target_dependencies(mpc_cartesian_planner_lib
   rclcpp std_msgs geometry_msgs visualization_msgs tf2_ros
   ocs2_core ocs2_mpc ocs2_msgs ocs2_ros_interfaces
-  ocs2_mobile_manipulator ocs2_pinocchio_interface
+  mobile_manipulator_mpc ocs2_pinocchio_interface
   pinocchio Eigen3
 )
 
@@ -46,7 +46,7 @@ target_link_libraries(trajectory_tt_publisher_node mpc_cartesian_planner_lib)
 ament_target_dependencies(trajectory_tt_publisher_node
   rclcpp std_msgs geometry_msgs visualization_msgs tf2_ros
   ocs2_core ocs2_mpc ocs2_msgs ocs2_ros_interfaces
-  ocs2_mobile_manipulator ocs2_pinocchio_interface
+  mobile_manipulator_mpc ocs2_pinocchio_interface
   pinocchio Eigen3
 )
 
@@ -55,7 +55,7 @@ target_link_libraries(trajectory_progress_monitor_node mpc_cartesian_planner_lib
 ament_target_dependencies(trajectory_progress_monitor_node
   rclcpp std_msgs geometry_msgs visualization_msgs tf2_ros
   ocs2_core ocs2_mpc ocs2_msgs ocs2_ros_interfaces
-  ocs2_mobile_manipulator ocs2_pinocchio_interface
+  mobile_manipulator_mpc ocs2_pinocchio_interface
   pinocchio Eigen3
 )
 

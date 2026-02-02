@@ -23,9 +23,9 @@
 
 #include <ocs2_ros_interfaces/common/RosMsgConversions.h>
 
-#include <ocs2_mobile_manipulator/MobileManipulatorInterface.h>
-#include <ocs2_mobile_manipulator/MobileManipulatorPinocchioMapping.h>
-#include <ocs2_mobile_manipulator/ManipulatorModelInfo.h>
+#include <mobile_manipulator_mpc/MobileManipulatorInterface.h>
+#include <mobile_manipulator_mpc/MobileManipulatorPinocchioMapping.h>
+#include <mobile_manipulator_mpc/ManipulatorModelInfo.h>
 
 #include <pinocchio/algorithm/frames.hpp>
 #include <pinocchio/algorithm/joint-configuration.hpp>
@@ -41,7 +41,7 @@ namespace {
 
 // ===== FK helper ============================================================
 inline bool computeEePose(ocs2::PinocchioInterface& pin,
-                          const ocs2::mobile_manipulator::MobileManipulatorPinocchioMapping& mapping,
+                          const ocs2::mobile_manipulator_mpc::MobileManipulatorPinocchioMapping& mapping,
                           std::size_t eeFrameId,
                           const ocs2::vector_t& state,
                           Eigen::Vector3d& p_out,
@@ -144,7 +144,7 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
     // --- Model / FK init ----------------------------------------------------
     if (!taskFile_.empty() && !urdfFile_.empty() && !libFolder_.empty()) {
       interface_ = std::make_unique<
-          ocs2::mobile_manipulator::MobileManipulatorInterface>(
+          ocs2::mobile_manipulator_mpc::MobileManipulatorInterface>(
           taskFile_, libFolder_, urdfFile_);
 
       pin_ = std::make_unique<ocs2::PinocchioInterface>(
@@ -152,7 +152,7 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
 
       modelInfo_ = interface_->getManipulatorModelInfo();
       mapping_ = std::make_unique<
-          ocs2::mobile_manipulator::MobileManipulatorPinocchioMapping>(modelInfo_);
+          ocs2::mobile_manipulator_mpc::MobileManipulatorPinocchioMapping>(modelInfo_);
 
       eeFrameId_ = pin_->getModel().getFrameId(modelInfo_.eeFrame);
     }
@@ -231,10 +231,10 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
 
   std::chrono::duration<double> monitorPeriod_{0.02};
 
-  std::unique_ptr<ocs2::mobile_manipulator::MobileManipulatorInterface> interface_;
+  std::unique_ptr<ocs2::mobile_manipulator_mpc::MobileManipulatorInterface> interface_;
   std::unique_ptr<ocs2::PinocchioInterface> pin_;
-  ocs2::mobile_manipulator::ManipulatorModelInfo modelInfo_;
-  std::unique_ptr<ocs2::mobile_manipulator::MobileManipulatorPinocchioMapping> mapping_;
+  ocs2::mobile_manipulator_mpc::ManipulatorModelInfo modelInfo_;
+  std::unique_ptr<ocs2::mobile_manipulator_mpc::MobileManipulatorPinocchioMapping> mapping_;
   std::size_t eeFrameId_{0};
 
   std::unique_ptr<TrajectoryMonitor> monitor_;

@@ -11,7 +11,7 @@ Install ROS 2 Humble (or a newer distro with the same APIs).
 ```bash
 # Clone the related repositories
 git clone \
-  https://github.com/wei-hsuan-cheng/ocs2_ros2.git
+  --recursive https://github.com/wei-hsuan-cheng/ocs2_ros2.git
 
 git clone \
   https://github.com/wei-hsuan-cheng/mobile_manipulator_mpc.git

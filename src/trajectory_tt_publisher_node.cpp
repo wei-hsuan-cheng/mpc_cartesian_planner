@@ -6,7 +6,7 @@
  * Subscribes:
  *   - <robotName>_mpc_observation   (ocs2_msgs/msg/MpcObservation)
  * Publishes:
- *   - <robotName>_mpc_ee_target    (ocs2_msgs/msg/MpcTargetTrajectories)
+ *   - <robotName>_mpc_target    (ocs2_msgs/msg/MpcTargetTrajectories)
  *
  * Optional visualization:
  *   - /mobile_manipulator/targetStateTrajectory (visualization_msgs/msg/MarkerArray)

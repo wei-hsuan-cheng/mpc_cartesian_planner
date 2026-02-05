@@ -173,7 +173,7 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
         });
 
     targetSub_ = this->create_subscription<ocs2_msgs::msg::MpcTargetTrajectories>(
-        robotName_ + "_mpc_ee_target", rclcpp::QoS(1).reliable(),
+        robotName_ + "_mpc_target", rclcpp::QoS(1).reliable(),
         [&](const ocs2_msgs::msg::MpcTargetTrajectories::ConstSharedPtr msg) {
           const auto traj = fromTargetMsg(*msg);
           std::lock_guard<std::mutex> lock(mtx_);

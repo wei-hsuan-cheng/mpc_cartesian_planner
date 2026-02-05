@@ -6,7 +6,7 @@
 namespace mpc_cartesian_planner {
 
 TrajectoryPublisher::TrajectoryPublisher(rclcpp::Node& node, const std::string& robotName) {
-  topic_ = robotName + std::string("_mpc_ee_target");
+  topic_ = robotName + std::string("_mpc_target");
   pub_ = node.create_publisher<ocs2_msgs::msg::MpcTargetTrajectories>(topic_, 1);
 }
 

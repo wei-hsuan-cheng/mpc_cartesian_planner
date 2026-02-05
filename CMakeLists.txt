@@ -59,7 +59,11 @@ ament_target_dependencies(trajectory_progress_monitor_node
   pinocchio Eigen3
 )
 
-install(TARGETS mpc_cartesian_planner_lib trajectory_tt_publisher_node trajectory_progress_monitor_node
+install(TARGETS 
+  mpc_cartesian_planner_lib 
+  trajectory_tt_publisher_node 
+  trajectory_progress_monitor_node
+  
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

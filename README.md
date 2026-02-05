@@ -11,13 +11,12 @@ Install ROS 2 Humble (or a newer distro with the same APIs).
 ```bash
 # Clone the related repositories
 git clone \
-  --recursive https://github.com/wei-hsuan-cheng/ocs2_ros2.git
+  --recursive https://github.com/wei-hsuan-cheng/ocs2_ros2.git \
+  -b humble_stable
 
 git clone \
-  https://github.com/wei-hsuan-cheng/mobile_manipulator_mpc.git
-
-git clone \
-  https://github.com/wei-hsuan-cheng/mpc_cartesian_planner.git
+  https://github.com/wei-hsuan-cheng/mpc_cartesian_planner.git \
+  -b humble_stable
 
 # rosdep install
 rosdep update

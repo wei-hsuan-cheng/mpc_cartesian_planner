@@ -342,6 +342,13 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
     }
 
     publishClosestWaypointMarker(traj, met.closest_index);
+
+    if (met.status == TrackingStatus::FINISHED) {
+      RCLCPP_INFO(this->get_logger(), "Tracking finished. Progress monitor entering idle mode.");
+      if (timer_) {
+        timer_->cancel();
+      }
+    }
   }
 
  private:

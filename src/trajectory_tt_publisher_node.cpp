@@ -36,6 +36,7 @@
 
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
@@ -226,6 +227,19 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
           haveObs_ = true;
         });
 
+    // Tracking status subscription (to stop when the monitor reports FINISHED).
+    trackingStatusSub_ = this->create_subscription<std_msgs::msg::String>(
+        robotName_ + "/trajectory_tracking/tracking_status", rclcpp::QoS(1).reliable(),
+        [this](const std_msgs::msg::String::ConstSharedPtr msg) {
+          if (msg->data != "FINISHED") return;
+          if (trackingFinished_) return;
+          trackingFinished_ = true;
+          RCLCPP_INFO(this->get_logger(), "Tracking finished. TT publisher entering idle mode.");
+          if (timer_) {
+            timer_->cancel();
+          }
+        });
+
     // Timer
     const auto period = std::chrono::duration<double>(1.0 / std::max(1e-6, publishRate_));
     timer_ = this->create_wall_timer(period, std::bind(&TrajectoryTTPublisherNode::onTimer, this));
@@ -240,6 +254,10 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
 
  private:
   void onTimer() {
+    if (trackingFinished_) {
+      return;
+    }
+
     SystemObservation obs;
     {
       std::lock_guard<std::mutex> lock(mtx_);
@@ -373,8 +391,9 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   Eigen::Vector3d axis_{0, 0, 1};
   bool publishViz_{true};
   bool publishTF_{true};
-  bool publishOnce_{true};
+  bool publishOnce_{false};
   bool publishedOnce_{false};
+  bool trackingFinished_{false};
   std::string commandFrameId_{"command"};
   PlannedCartesianTrajectory publishedTraj_;
   bool havePublishedTraj_{false};
@@ -399,6 +418,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr posePub_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster_;
   rclcpp::Subscription<ocs2_msgs::msg::MpcObservation>::SharedPtr obsSub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trackingStatusSub_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   std::mutex mtx_;

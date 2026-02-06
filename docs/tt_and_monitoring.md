@@ -244,6 +244,8 @@ Thresholds are defined by `MonitorParams`. See [`include/mpc_cartesian_planner/t
 
 Implementation detail: divergence integrates elapsed time between monitor updates (derived from observation timestamps, falling back to `1 / monitorRate`). See [`src/trajectory_monitor.cpp#L95`](../src/trajectory_monitor.cpp#L95).
 
+When the monitor reaches `FINISHED`, it publishes the final status/metrics and then cancels its internal timer (stops publishing). The TT publisher also cancels its timer when it sees `FINISHED` on the status topic.
+
 ## 7) Parameters and tuning
 
 The demo config is in [`config/tt_params.yaml#L1`](../config/tt_params.yaml#L1).

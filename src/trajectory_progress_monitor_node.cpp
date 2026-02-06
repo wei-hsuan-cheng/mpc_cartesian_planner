@@ -16,6 +16,7 @@
 
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <ocs2_mpc/SystemObservation.h>
 #include <ocs2_msgs/msg/mpc_observation.hpp>
@@ -111,6 +112,8 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
     this->declare_parameter<std::string>("robotName", "mobile_manipulator");
 
     this->declare_parameter<double>("monitorRate", 50.0);
+    this->declare_parameter<std::string>("trajectoryGlobalFrame", std::string("world"));
+    this->declare_parameter<bool>("publishViz", true);
 
     // Monitor params (match config/tt_params.yaml)
     this->declare_parameter<int>("window", 20);
@@ -129,6 +132,9 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
 
     const double rate = this->get_parameter("monitorRate").as_double();
     monitorPeriod_ = std::chrono::duration<double>(1.0 / std::max(1e-6, rate));
+
+    globalFrame_ = this->get_parameter("trajectoryGlobalFrame").as_string();
+    publishViz_ = this->get_parameter("publishViz").as_bool();
 
     MonitorParams mp;
     mp.window = this->get_parameter("window").as_int();
@@ -162,6 +168,11 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
         this->create_publisher<std_msgs::msg::String>("tracking_status", 10);
     metricsPub_ =
         this->create_publisher<std_msgs::msg::Float64MultiArray>("tracking_metrics", 10);
+    if (publishViz_) {
+      closestWaypointPub_ =
+          this->create_publisher<visualization_msgs::msg::MarkerArray>(
+              "/mobile_manipulator/closestTargetWaypoint", 1);
+    }
 
     // --- Subscriptions ------------------------------------------------------
     obsSub_ = this->create_subscription<ocs2_msgs::msg::MpcObservation>(
@@ -193,21 +204,95 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
   }
 
  private:
+  void publishClosestWaypointMarker(const PlannedCartesianTrajectory& traj, std::size_t index) {
+    if (!publishViz_ || !closestWaypointPub_) return;
+    if (traj.empty() || traj.position.size() != traj.time.size() || traj.quat.size() != traj.time.size()) return;
+    if (index >= traj.size()) return;
+
+    visualization_msgs::msg::MarkerArray markerArray;
+    markerArray.markers.reserve(1);
+
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = globalFrame_;
+    marker.header.stamp = this->now();
+    marker.ns = "closest_target_waypoint";
+    marker.id = 0;
+    marker.type = visualization_msgs::msg::Marker::SPHERE;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.scale.x = marker.scale.y = marker.scale.z = 0.01;
+    marker.color.r = 1.0f;
+    marker.color.g = 0.0f;
+    marker.color.b = 0.0f;
+    marker.color.a = 1.0f;
+
+    const auto& p = traj.position[index];
+    const auto q = traj.quat[index].normalized();
+    marker.pose.position.x = p.x();
+    marker.pose.position.y = p.y();
+    marker.pose.position.z = p.z();
+    marker.pose.orientation.x = q.x();
+    marker.pose.orientation.y = q.y();
+    marker.pose.orientation.z = q.z();
+    marker.pose.orientation.w = q.w();
+
+    markerArray.markers.push_back(std::move(marker));
+    closestWaypointPub_->publish(markerArray);
+    closestWaypointPublished_ = true;
+  }
+
+  void clearClosestWaypointMarker() {
+    if (!closestWaypointPublished_ || !closestWaypointPub_) return;
+    visualization_msgs::msg::MarkerArray markerArray;
+    markerArray.markers.reserve(1);
+
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = globalFrame_;
+    marker.header.stamp = this->now();
+    marker.ns = "closest_target_waypoint";
+    marker.id = 0;
+    marker.action = visualization_msgs::msg::Marker::DELETE;
+
+    markerArray.markers.push_back(std::move(marker));
+    closestWaypointPub_->publish(markerArray);
+    closestWaypointPublished_ = false;
+  }
+
   void onTimer() {
     SystemObservation obs;
     {
       std::lock_guard<std::mutex> lock(mtx_);
-      if (!haveObs_ || !haveRef_) return;
+      if (!haveObs_ || !haveRef_) {
+        clearClosestWaypointMarker();
+        return;
+      }
       obs = latestObs_;
+    }
+
+    if (!pin_ || !mapping_) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                           "Pinocchio not initialized (set taskFile/urdfFile/libFolder).");
+      clearClosestWaypointMarker();
+      return;
     }
 
     Eigen::Vector3d p;
     Eigen::Quaterniond q;
     if (!computeEePose(*pin_, *mapping_, eeFrameId_, obs.state, p, q)) {
+      clearClosestWaypointMarker();
       return;
     }
 
-    const TrackingMetrics met = monitor_->update(obs.time, p, q);
+    TrackingMetrics met;
+    PlannedCartesianTrajectory traj;
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      if (!haveRef_) {
+        clearClosestWaypointMarker();
+        return;
+      }
+      met = monitor_->update(obs.time, p, q);
+      traj = latestRef_;
+    }
     const std::string status = statusToString(met);
 
     std_msgs::msg::String s;
@@ -224,10 +309,14 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
         met.lag_sec,
         static_cast<double>(met.closest_index)};
     metricsPub_->publish(m);
+
+    publishClosestWaypointMarker(traj, met.closest_index);
   }
 
  private:
   std::string taskFile_, urdfFile_, libFolder_, robotName_;
+  std::string globalFrame_{"world"};
+  bool publishViz_{true};
 
   std::chrono::duration<double> monitorPeriod_{0.02};
 
@@ -241,6 +330,8 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr statusPub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr metricsPub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr closestWaypointPub_;
+  bool closestWaypointPublished_{false};
   rclcpp::Subscription<ocs2_msgs::msg::MpcObservation>::SharedPtr obsSub_;
   rclcpp::Subscription<ocs2_msgs::msg::MpcTargetTrajectories>::SharedPtr targetSub_;
   rclcpp::TimerBase::SharedPtr timer_;

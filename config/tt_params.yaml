@@ -16,7 +16,7 @@ trajectory_tt_publisher:
     # linearMoveOffset: [0.0, 0.0, 0.1, 0.0, 0.0, 0.0] # [dx, dy, dz, thz, thy, thx] (m, rad)
     linearMoveOffset: [0.0, 0.0, 0.1, 0.0, 0.7854, 0.0] # [dx, dy, dz, thz, thy, thx] (m, rad)
     linearMoveOffsetInToolFrame: true
-    linearMoveTimeScaling: min_jerk
+    linearMoveTimeScaling: min_jerk # linear, min_jerk
 
 trajectory_progress_monitor:
   ros__parameters:

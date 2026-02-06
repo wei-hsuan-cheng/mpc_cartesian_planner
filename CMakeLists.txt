@@ -30,7 +30,7 @@ include_directories(
 )
 
 add_library(mpc_cartesian_planner_lib
-  src/cartesian_path_planner.cpp
+  src/cartesian_trajectory_planner.cpp
   src/trajectory_publisher.cpp
   src/trajectory_monitor.cpp
 )

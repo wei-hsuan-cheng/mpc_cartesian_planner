@@ -4,11 +4,12 @@ mpc_cartesian_planner/
   CMakeLists.txt
   README.md
   include/mpc_cartesian_planner/
+    cartesian_trajectory_planner.h
     cartesian_path_planner.h
     trajectory_publisher.h
     trajectory_monitor.h
   src/
-    cartesian_path_planner.cpp
+    cartesian_trajectory_planner.cpp
     trajectory_publisher.cpp
     trajectory_monitor.cpp
     trajectory_tt_publisher_node.cpp

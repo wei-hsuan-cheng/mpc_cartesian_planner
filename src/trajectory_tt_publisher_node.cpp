@@ -55,7 +55,7 @@
 #include <pinocchio/algorithm/joint-configuration.hpp>
 #include <pinocchio/algorithm/kinematics.hpp>
 
-#include "mpc_cartesian_planner/cartesian_path_planner.h"
+#include "mpc_cartesian_planner/cartesian_trajectory_planner.h"
 #include "mpc_cartesian_planner/trajectory_publisher.h"
 
 using ocs2::SystemObservation;

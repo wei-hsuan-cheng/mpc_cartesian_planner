@@ -4,7 +4,7 @@
 #include <Eigen/Geometry>
 #include <string>
 
-#include "mpc_cartesian_planner/cartesian_path_planner.h"
+#include "mpc_cartesian_planner/cartesian_trajectory_planner.h"
 
 namespace mpc_cartesian_planner {
 

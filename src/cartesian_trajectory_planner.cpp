@@ -1,4 +1,4 @@
-#include "mpc_cartesian_planner/cartesian_path_planner.h"
+#include "mpc_cartesian_planner/cartesian_trajectory_planner.h"
 
 #include <cmath>
 

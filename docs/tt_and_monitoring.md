@@ -35,7 +35,7 @@ On the first timer tick where an observation is available, the node:
 2) If `taskFile/urdfFile/libFolder` are provided, it computes the initial end-effector pose using Pinocchio FK:
    - FK helper: [`src/trajectory_tt_publisher_node.cpp#L77`](../src/trajectory_tt_publisher_node.cpp#L77)
    - Initialization call site: [`src/trajectory_tt_publisher_node.cpp#L198`](../src/trajectory_tt_publisher_node.cpp#L198)
-3) Constructs a `FigureEightPlanner` with `(centerP_, q0_)` and parameters from ROS params. See [`src/trajectory_tt_publisher_node.cpp#L210`](../src/trajectory_tt_publisher_node.cpp#L210).
+3) Constructs a planner selected by `trajectoryType` (e.g., `FigureEightPlanner` or `LinearMovePlanner`) using `(centerP_, q0_)` and parameters from ROS params.
 4) Anchors the planner phase by setting `planner_->setStartTime(startTime_)`. See [`src/trajectory_tt_publisher_node.cpp#L217`](../src/trajectory_tt_publisher_node.cpp#L217).
 
 If the model paths are not set, the node falls back to `centerP_ = 0` and `q0 = Identity` (and still publishes a trajectory). See [`src/trajectory_tt_publisher_node.cpp#L152`](../src/trajectory_tt_publisher_node.cpp#L152).
@@ -53,11 +53,15 @@ Note: in the default *receding-horizon* behavior (publishing a new horizon each 
 
 If you want a **finite trajectory** with meaningful `progress` and a terminal `FINISHED` state, set `publishOnce: true` in the TT publisher params. In this mode the node publishes the target trajectory once (with `horizon` as the total duration) and then stops publishing.
 
-## 3) Planner math (Figure Eight)
+## 3) Planner math (Trajectory Types)
 
 The planner interface and output container are:
+- `CartesianTrajectoryPlanner`: [`include/mpc_cartesian_planner/cartesian_trajectory_planner.h#L32`](../include/mpc_cartesian_planner/cartesian_trajectory_planner.h#L32)
 - `PlannedCartesianTrajectory`: [`include/mpc_cartesian_planner/cartesian_trajectory_planner.h#L11`](../include/mpc_cartesian_planner/cartesian_trajectory_planner.h#L11)
-- `FigureEightPlanner`: [`include/mpc_cartesian_planner/cartesian_trajectory_planner.h#L33`](../include/mpc_cartesian_planner/cartesian_trajectory_planner.h#L33)
+- `FigureEightPlanner`: [`include/mpc_cartesian_planner/cartesian_trajectory_planner.h#L39`](../include/mpc_cartesian_planner/cartesian_trajectory_planner.h#L39)
+- `LinearMovePlanner`: [`include/mpc_cartesian_planner/cartesian_trajectory_planner.h#L72`](../include/mpc_cartesian_planner/cartesian_trajectory_planner.h#L72)
+
+The TT publisher selects the planner via the `trajectoryType` parameter (see `config/tt_params.yaml`).
 
 ### 3.1 Time discretization
 
@@ -115,6 +119,47 @@ q(t_k) = q_0
 $$
 
 See [`src/cartesian_trajectory_planner.cpp#L59`](../src/cartesian_trajectory_planner.cpp#L59).
+
+### 3.4 Linear move (min-jerk time scaling)
+
+`LinearMovePlanner` generates a straight-line translation and a smooth orientation change from the initial end-effector pose.
+
+The command is provided as a 6D vector:
+
+$$
+[\Delta x,\;\Delta y,\;\Delta z,\;\theta_z,\;\theta_y,\;\theta_x]
+$$
+
+where \((\theta_z,\theta_y,\theta_x)\) is **ZYX Euler** (applied as \(R_z(\theta_z)R_y(\theta_y)R_x(\theta_x)\)) in radians.
+
+For backward compatibility, `linearMoveOffset` may also be provided as `[dx, dy, dz]` (rotation assumed zero).
+
+$$
+p_1 = p_0 + \Delta p
+$$
+
+If `linearMoveOffsetInToolFrame: true`, the 6D offset is interpreted as a relative pose in the **initial EE/tool frame**.
+If `linearMoveOffsetInToolFrame: false`, translation is in the **global/base frame** and the rotation is applied about **global/base axes**.
+
+Time is normalized over the total duration \(T\) (`horizon_T`) as:
+
+$$
+\tau = \mathrm{clamp}\left(\frac{t - t_{\text{start}}}{T},\, 0,\, 1\right)
+$$
+
+and the position uses a time-scaling \(s(\tau)\):
+
+$$
+p(t) = p_0 + s(\tau)\,(p_1 - p_0)
+$$
+
+For `linearMoveTimeScaling: min_jerk`, the scaling is:
+
+$$
+s(\tau)=10\tau^3-15\tau^4+6\tau^5
+$$
+
+Orientation interpolates in so(3) using the exponential map (equivalently, scaling the rotation-vector log), so it stays on-manifold while transitioning from the start orientation to the commanded Euler offset.
 
 ## 4) Publishing the target trajectory (OCS2 message)
 
@@ -254,18 +299,22 @@ TT publisher parameters:
 - `publishRate`: publishing frequency (Hz). See [`config/tt_params.yaml#L3`](../config/tt_params.yaml#L3).
 - `publishOnce`: if `true`, publish the target trajectory once and stop publishing (useful for finite tracks + `FINISHED`). See [`config/tt_params.yaml#L4`](../config/tt_params.yaml#L4).
 - `commandFrameId`: child frame id for the published command TF. See [`config/tt_params.yaml#L5`](../config/tt_params.yaml#L5).
-- `horizon`: horizon length \(T\) (seconds). In `publishOnce=true`, this is the total trajectory duration. See [`config/tt_params.yaml#L6`](../config/tt_params.yaml#L6).
-- `dt`: discretization step \(\Delta t\) (seconds). See [`config/tt_params.yaml#L7`](../config/tt_params.yaml#L7).
-- `amplitude`: figure-eight amplitude \(A\) (meters). See [`config/tt_params.yaml#L8`](../config/tt_params.yaml#L8).
-- `frequency`: sinusoid frequency \(f\) (Hz). See [`config/tt_params.yaml#L9`](../config/tt_params.yaml#L9).
-- `axisX/Y/Z`: normal vector for the motion plane. See [`config/tt_params.yaml#L11`](../config/tt_params.yaml#L11).
+- `trajectoryType`: trajectory generator (`figure_eight` or `linear_move`). See [`config/tt_params.yaml#L6`](../config/tt_params.yaml#L6).
+- `horizon`: horizon length \(T\) (seconds). In `publishOnce=true`, this is the total trajectory duration. See [`config/tt_params.yaml#L7`](../config/tt_params.yaml#L7).
+- `dt`: discretization step \(\Delta t\) (seconds). See [`config/tt_params.yaml#L8`](../config/tt_params.yaml#L8).
+- `amplitude`: figure-eight amplitude \(A\) (meters). See [`config/tt_params.yaml#L9`](../config/tt_params.yaml#L9).
+- `frequency`: sinusoid frequency \(f\) (Hz). See [`config/tt_params.yaml#L10`](../config/tt_params.yaml#L10).
+- `axisX/Y/Z`: normal vector for the motion plane. See [`config/tt_params.yaml#L12`](../config/tt_params.yaml#L12).
+- `linearMoveOffset`: 6D offset `[dx, dy, dz, thz, thy, thx]` (meters, radians) for `linear_move`. See [`config/tt_params.yaml#L16`](../config/tt_params.yaml#L16).
+- `linearMoveOffsetInToolFrame`: if `true`, interpret `linearMoveOffset` in the initial EE/tool frame. See [`config/tt_params.yaml#L17`](../config/tt_params.yaml#L17).
+- `linearMoveTimeScaling`: time scaling for `linear_move` (`min_jerk` or `linear`). See [`config/tt_params.yaml#L18`](../config/tt_params.yaml#L18).
 
 Monitor parameters:
-- `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L17`](../config/tt_params.yaml#L17).
-- `publishTF`: if `true`, publish a TF for the closest reference waypoint. See [`config/tt_params.yaml#L18`](../config/tt_params.yaml#L18).
-- `closestFrameId`: child frame id for the closest-waypoint TF. See [`config/tt_params.yaml#L19`](../config/tt_params.yaml#L19).
-- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L20`](../config/tt_params.yaml#L20).
-- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L21`](../config/tt_params.yaml#L21).
-- `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L23`](../config/tt_params.yaml#L23).
-- `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L26`](../config/tt_params.yaml#L26).
-- `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L29`](../config/tt_params.yaml#L29).
+- `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L22`](../config/tt_params.yaml#L22).
+- `publishTF`: if `true`, publish a TF for the closest reference waypoint. See [`config/tt_params.yaml#L23`](../config/tt_params.yaml#L23).
+- `closestFrameId`: child frame id for the closest-waypoint TF. See [`config/tt_params.yaml#L24`](../config/tt_params.yaml#L24).
+- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L25`](../config/tt_params.yaml#L25).
+- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L26`](../config/tt_params.yaml#L26).
+- `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L28`](../config/tt_params.yaml#L28).
+- `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L31`](../config/tt_params.yaml#L31).
+- `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L34`](../config/tt_params.yaml#L34).

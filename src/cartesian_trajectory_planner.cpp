@@ -1,8 +1,30 @@
 #include "mpc_cartesian_planner/cartesian_trajectory_planner.h"
 
+#include <algorithm>
 #include <cmath>
 
+#include "robot_math_utils/robot_math_utils_v1_17.hpp"
+
 namespace mpc_cartesian_planner {
+
+namespace {
+
+inline double evalTimeScaling(TimeScalingType type, double tau01) {
+  const double t = std::clamp(tau01, 0.0, 1.0);
+  switch (type) {
+    case TimeScalingType::Linear: return t;
+    case TimeScalingType::MinJerk: {
+      const double t2 = t * t;
+      const double t3 = t2 * t;
+      const double t4 = t3 * t;
+      const double t5 = t4 * t;
+      return 10.0 * t3 - 15.0 * t4 + 6.0 * t5;
+    }
+    default: return t;
+  }
+}
+
+}  // namespace
 
 FigureEightPlanner::FigureEightPlanner(const Eigen::Vector3d& center_p,
                                        const Eigen::Quaterniond& q0,
@@ -57,6 +79,66 @@ PlannedCartesianTrajectory FigureEightPlanner::plan(const ocs2::SystemObservatio
     out.time.push_back(tk);
     out.position.push_back(p);
     out.quat.push_back(q0_.normalized());  // constant orientation
+  }
+  return out;
+}
+
+LinearMovePlanner::LinearMovePlanner(const Eigen::Vector3d& start_p,
+                                     const Eigen::Quaterniond& start_q,
+                                     LinearMoveParams params)
+    : p0_(start_p), q0_(start_q.normalized()), params_(std::move(params)) {
+  // Build the relative command pose e->e_cmd and convert it to (pos, so3) coordinates:
+  //   pos_so3 = [p; log(R)]
+  PosQuat pos_quat_b_e(p0_, q0_);
+
+  const Eigen::Quaterniond dq =
+      RMUtils::zyxEuler2Quat(params_.euler_zyx, /*rad=*/true).normalized();
+
+  PosQuat pos_quat_e_e_cmd;
+  if (params_.offset_in_body_frame) {
+    // Interpret the offset as a relative pose expressed in the initial EE/tool frame.
+    pos_quat_e_e_cmd = PosQuat(params_.offset, dq);
+  } else {
+    // Interpret the offset as a delta in the global frame (translation in base, rotation about base axes).
+    const Eigen::Vector3d p_goal = p0_ + params_.offset;
+    const Eigen::Quaterniond q_goal = (dq * q0_).normalized();
+    const PosQuat pos_quat_b_e_goal(p_goal, q_goal);
+    pos_quat_e_e_cmd = RMUtils::PosQuats2RelativePosQuat(pos_quat_b_e, pos_quat_b_e_goal);
+  }
+
+  pos_so3_e_e_cmd_ = RMUtils::PosQuat2Posso3(pos_quat_e_e_cmd);
+}
+
+PlannedCartesianTrajectory LinearMovePlanner::plan(const ocs2::SystemObservation& obs) {
+  const double t0 = obs.time;
+  if (!have_start_time_) {
+    start_time_ = t0;
+    have_start_time_ = true;
+  }
+
+  const double dt = std::max(1e-9, params_.dt);
+  const double T = std::max(1e-9, params_.horizon_T);
+  const int N = std::max(1, static_cast<int>(std::ceil(T / dt)));
+
+  PlannedCartesianTrajectory out;
+  out.time.reserve(N + 1);
+  out.position.reserve(N + 1);
+  out.quat.reserve(N + 1);
+
+  const PosQuat pos_quat_b_e(p0_, q0_);
+
+  for (int k = 0; k <= N; ++k) {
+    const double tk = t0 + k * dt;
+    const double tau01 = (tk - start_time_) / T;
+    const double s = evalTimeScaling(params_.time_scaling, tau01);
+
+    const Eigen::Matrix<double, 6, 1> pos_so3_e_e_cmd_i = s * pos_so3_e_e_cmd_;
+    const PosQuat pos_quat_e_e_cmd_i = RMUtils::Posso32PosQuat(pos_so3_e_e_cmd_i);
+    const PosQuat pos_quat_b_e_d_i = RMUtils::TransformPosQuats({pos_quat_b_e, pos_quat_e_e_cmd_i});
+
+    out.time.push_back(tk);
+    out.position.push_back(pos_quat_b_e_d_i.pos);
+    out.quat.push_back(pos_quat_b_e_d_i.quat.normalized());
   }
   return out;
 }

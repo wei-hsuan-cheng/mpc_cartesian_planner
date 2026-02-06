@@ -23,11 +23,13 @@
 
 #include <chrono>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -74,6 +76,19 @@ inline Eigen::Vector3d readAxis(rclcpp::Node& node) {
   if (axis.norm() < 1e-9) axis = Eigen::Vector3d::UnitZ();
   axis.normalize();
   return axis;
+}
+
+inline std::string toLowerCopy(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return s;
+}
+
+inline TimeScalingType parseTimeScaling(const std::string& s) {
+  const std::string v = toLowerCopy(s);
+  if (v == "linear") return TimeScalingType::Linear;
+  if (v == "min_jerk" || v == "minjerk" || v == "min-jerk") return TimeScalingType::MinJerk;
+  return TimeScalingType::MinJerk;
 }
 
 // Compute EE pose via Pinocchio FK using OCS2 pinocchio mapping.
@@ -171,6 +186,11 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<bool>("publishOnce", false);
     this->declare_parameter<std::string>("commandFrameId", std::string("command"));
 
+    this->declare_parameter<std::string>("trajectoryType", std::string("figure_eight"));
+    this->declare_parameter<std::vector<double>>("linearMoveOffset", std::vector<double>({0.0, 0.0, 0.0, 0.0, 0.0, 0.0}));
+    this->declare_parameter<bool>("linearMoveOffsetInToolFrame", false);
+    this->declare_parameter<std::string>("linearMoveTimeScaling", std::string("min_jerk"));
+
     taskFile_ = this->get_parameter("taskFile").as_string();
     urdfFile_ = this->get_parameter("urdfFile").as_string();
     libFolder_ = this->get_parameter("libFolder").as_string();
@@ -188,6 +208,26 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     publishOnce_ = this->get_parameter("publishOnce").as_bool();
     commandFrameId_ = this->get_parameter("commandFrameId").as_string();
     if (commandFrameId_.empty()) commandFrameId_ = "command";
+
+    trajectoryType_ = this->get_parameter("trajectoryType").as_string();
+    if (trajectoryType_.empty()) trajectoryType_ = "figure_eight";
+    {
+      const auto offset = this->get_parameter("linearMoveOffset").as_double_array();
+      if (offset.size() == 3) {
+        linearMoveOffset_ = Eigen::Vector3d(offset[0], offset[1], offset[2]);
+        linearMoveEulerZyx_ = Eigen::Vector3d::Zero();
+      } else if (offset.size() == 6) {
+        linearMoveOffset_ = Eigen::Vector3d(offset[0], offset[1], offset[2]);
+        // ZYX Euler order: [thz, thy, thx] in radians
+        linearMoveEulerZyx_ = Eigen::Vector3d(offset[3], offset[4], offset[5]);
+      } else {
+        RCLCPP_WARN(this->get_logger(), "linearMoveOffset must be a double[3] or double[6]. Got size=%zu. Using zeros.", offset.size());
+        linearMoveOffset_ = Eigen::Vector3d::Zero();
+        linearMoveEulerZyx_ = Eigen::Vector3d::Zero();
+      }
+    }
+    linearMoveOffsetInToolFrame_ = this->get_parameter("linearMoveOffsetInToolFrame").as_bool();
+    linearMoveTimeScaling_ = parseTimeScaling(this->get_parameter("linearMoveTimeScaling").as_string());
 
     if (!taskFile_.empty() && !urdfFile_.empty() && !libFolder_.empty()) {
       try {
@@ -280,13 +320,34 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
         }
       }
 
-      FigureEightParams p;
-      p.horizon_T = horizon_;
-      p.dt = dt_;
-      p.amplitude = amplitude_;
-      p.frequency_hz = freqHz_;
-      p.plane_axis = axis_;
-      planner_ = std::make_unique<FigureEightPlanner>(centerP_, q0_, p);
+      const std::string type = toLowerCopy(trajectoryType_);
+      if (type == "figure_eight" || type == "figure8" || type == "figure-eight") {
+        FigureEightParams p;
+        p.horizon_T = horizon_;
+        p.dt = dt_;
+        p.amplitude = amplitude_;
+        p.frequency_hz = freqHz_;
+        p.plane_axis = axis_;
+        planner_ = std::make_unique<FigureEightPlanner>(centerP_, q0_, p);
+      } else if (type == "linear_move" || type == "linearmove" || type == "linear-move" || type == "linear") {
+        LinearMoveParams p;
+        p.horizon_T = horizon_;
+        p.dt = dt_;
+        p.offset = linearMoveOffset_;
+        p.euler_zyx = linearMoveEulerZyx_;
+        p.offset_in_body_frame = linearMoveOffsetInToolFrame_;
+        p.time_scaling = linearMoveTimeScaling_;
+        planner_ = std::make_unique<LinearMovePlanner>(centerP_, q0_, p);
+      } else {
+        RCLCPP_WARN(this->get_logger(), "Unknown trajectoryType='%s'. Falling back to figure_eight.", trajectoryType_.c_str());
+        FigureEightParams p;
+        p.horizon_T = horizon_;
+        p.dt = dt_;
+        p.amplitude = amplitude_;
+        p.frequency_hz = freqHz_;
+        p.plane_axis = axis_;
+        planner_ = std::make_unique<FigureEightPlanner>(centerP_, q0_, p);
+      }
       planner_->setStartTime(startTime_);
 
       initialized_ = true;
@@ -395,6 +456,11 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   bool publishedOnce_{false};
   bool trackingFinished_{false};
   std::string commandFrameId_{"command"};
+  std::string trajectoryType_{"figure_eight"};
+  Eigen::Vector3d linearMoveOffset_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d linearMoveEulerZyx_{Eigen::Vector3d::Zero()};
+  bool linearMoveOffsetInToolFrame_{false};
+  TimeScalingType linearMoveTimeScaling_{TimeScalingType::MinJerk};
   PlannedCartesianTrajectory publishedTraj_;
   bool havePublishedTraj_{false};
 
@@ -410,7 +476,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   double startTime_{0.0};
   Eigen::Vector3d centerP_{Eigen::Vector3d::Zero()};
   Eigen::Quaterniond q0_{Eigen::Quaterniond::Identity()};
-  std::unique_ptr<FigureEightPlanner> planner_;
+  std::unique_ptr<CartesianTrajectoryPlanner> planner_;
 
   // ROS I/O
   std::unique_ptr<TrajectoryPublisher> trajPub_;

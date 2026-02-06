@@ -143,4 +143,50 @@ PlannedCartesianTrajectory LinearMovePlanner::plan(const ocs2::SystemObservation
   return out;
 }
 
+TargetPosePlanner::TargetPosePlanner(const Eigen::Vector3d& start_p,
+                                     const Eigen::Quaterniond& start_q,
+                                     TargetPoseParams params)
+    : p0_(start_p), q0_(start_q.normalized()), params_(std::move(params)) {
+  if (params_.target_q.norm() < 1e-12) {
+    params_.target_q = Eigen::Quaterniond::Identity();
+  } else {
+    params_.target_q.normalize();
+  }
+}
+
+PlannedCartesianTrajectory TargetPosePlanner::plan(const ocs2::SystemObservation& obs) {
+  const double t0 = obs.time;
+  if (!have_start_time_) {
+    start_time_ = t0;
+    have_start_time_ = true;
+  }
+
+  const double dt = std::max(1e-9, params_.dt);
+  const double T = std::max(1e-9, params_.horizon_T);
+  const int N = std::max(1, static_cast<int>(std::ceil(T / dt)));
+
+  PlannedCartesianTrajectory out;
+  out.time.reserve(N + 1);
+  out.position.reserve(N + 1);
+  out.quat.reserve(N + 1);
+
+  const Eigen::Vector3d dp = params_.target_p - p0_;
+
+  for (int k = 0; k <= N; ++k) {
+    const double tk = t0 + k * dt;
+    const double tau01 = (tk - start_time_) / T;
+    const double s = evalTimeScaling(params_.time_scaling, tau01);
+
+    const Eigen::Vector3d p = p0_ + s * dp;
+    const Eigen::Quaterniond q = params_.use_target_orientation
+                                     ? q0_.slerp(s, params_.target_q).normalized()
+                                     : q0_;
+
+    out.time.push_back(tk);
+    out.position.push_back(p);
+    out.quat.push_back(q);
+  }
+  return out;
+}
+
 }  // namespace mpc_cartesian_planner

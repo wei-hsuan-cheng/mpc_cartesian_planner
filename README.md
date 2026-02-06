@@ -15,6 +15,10 @@ git clone \
   -b humble_stable
 
 git clone \
+  https://github.com/wei-hsuan-cheng/mpc_controller.git \
+  -b humble_stable
+
+git clone \
   https://github.com/wei-hsuan-cheng/mpc_cartesian_planner.git \
   -b humble_stable
 
@@ -25,7 +29,15 @@ rosdep install --from-paths src --ignore-src -r -y
 # Build and install
 cd ~/ros2_ws
 colcon build --symlink-install \
-  --packages-up-to mpc_cartesian_planner \
+  --packages-up-to mpc_controller mpc_cartesian_planner \
   --parallel-workers 4 --executor sequential \
   && . install/setup.bash
 ```
+
+## Trajectory Types
+
+`trajectory_tt_publisher` supports these `trajectoryType` values (see `config/tt_params.yaml`):
+
+- `figure_eight`: Periodic figure-eight around the initial EE pose.
+- `linear_move`: Apply a relative offset (global frame or tool frame) with `linearMoveTimeScaling` (`linear` / `min_jerk`).
+- `target_pose`: Move in a straight line (global frame) from the initial EE pose to an absolute target pose with `poseMoveTimeScaling` (`linear` / `min_jerk`).

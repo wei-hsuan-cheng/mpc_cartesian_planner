@@ -61,6 +61,7 @@
 
 #include "mpc_cartesian_planner/cartesian_trajectory_planner.h"
 #include "mpc_cartesian_planner/trajectory_publisher.h"
+#include "robot_math_utils/robot_math_utils_v1_17.hpp"
 
 using ocs2::SystemObservation;
 
@@ -190,6 +191,8 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<std::vector<double>>("linearMoveOffset", std::vector<double>({0.0, 0.0, 0.0, 0.0, 0.0, 0.0}));
     this->declare_parameter<bool>("linearMoveOffsetInToolFrame", false);
     this->declare_parameter<std::string>("linearMoveTimeScaling", std::string("min_jerk"));
+    this->declare_parameter<std::vector<double>>("poseMoveTarget", std::vector<double>{});
+    this->declare_parameter<std::string>("poseMoveTimeScaling", std::string("min_jerk"));
 
     taskFile_ = this->get_parameter("taskFile").as_string();
     urdfFile_ = this->get_parameter("urdfFile").as_string();
@@ -228,6 +231,46 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     }
     linearMoveOffsetInToolFrame_ = this->get_parameter("linearMoveOffsetInToolFrame").as_bool();
     linearMoveTimeScaling_ = parseTimeScaling(this->get_parameter("linearMoveTimeScaling").as_string());
+
+    {
+      const auto pose = this->get_parameter("poseMoveTarget").as_double_array();
+      if (!pose.empty()) {
+        if (pose.size() == 3) {
+          poseMoveHasTarget_ = true;
+          poseMoveHasOrientation_ = false;
+          poseMoveTargetP_ = Eigen::Vector3d(pose[0], pose[1], pose[2]);
+          poseMoveTargetQ_ = Eigen::Quaterniond::Identity();
+        } else if (pose.size() == 6) {
+          poseMoveHasTarget_ = true;
+          poseMoveHasOrientation_ = true;
+          poseMoveTargetP_ = Eigen::Vector3d(pose[0], pose[1], pose[2]);
+          // ZYX Euler order: [thz, thy, thx] in radians
+          const Eigen::Vector3d euler_zyx(pose[3], pose[4], pose[5]);
+          poseMoveTargetQ_ = RMUtils::zyxEuler2Quat(euler_zyx, /*rad=*/true).normalized();
+        } else if (pose.size() == 7) {
+          poseMoveHasTarget_ = true;
+          poseMoveHasOrientation_ = true;
+          poseMoveTargetP_ = Eigen::Vector3d(pose[0], pose[1], pose[2]);
+          const Eigen::Quaterniond q(pose[6], pose[3], pose[4], pose[5]);  // [x y z qx qy qz qw]
+          if (q.norm() < 1e-12) {
+            RCLCPP_WARN(this->get_logger(), "poseMoveTarget quaternion has near-zero norm. Ignoring orientation.");
+            poseMoveHasOrientation_ = false;
+            poseMoveTargetQ_ = Eigen::Quaterniond::Identity();
+          } else {
+            poseMoveTargetQ_ = q.normalized();
+          }
+        } else {
+          RCLCPP_WARN(this->get_logger(),
+                      "poseMoveTarget must be a double[3], double[6], or double[7]. Got size=%zu. Ignoring.",
+                      pose.size());
+          poseMoveHasTarget_ = false;
+          poseMoveHasOrientation_ = false;
+          poseMoveTargetP_ = Eigen::Vector3d::Zero();
+          poseMoveTargetQ_ = Eigen::Quaterniond::Identity();
+        }
+      }
+    }
+    poseMoveTimeScaling_ = parseTimeScaling(this->get_parameter("poseMoveTimeScaling").as_string());
 
     if (!taskFile_.empty() && !urdfFile_.empty() && !libFolder_.empty()) {
       try {
@@ -338,6 +381,20 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
         p.offset_in_body_frame = linearMoveOffsetInToolFrame_;
         p.time_scaling = linearMoveTimeScaling_;
         planner_ = std::make_unique<LinearMovePlanner>(centerP_, q0_, p);
+      } else if (type == "target_pose" || type == "pose_target" || type == "goal_pose" || type == "pose") {
+        TargetPoseParams p;
+        p.horizon_T = horizon_;
+        p.dt = dt_;
+        p.time_scaling = poseMoveTimeScaling_;
+        p.target_p = poseMoveHasTarget_ ? poseMoveTargetP_ : centerP_;
+        if (poseMoveHasOrientation_) {
+          p.target_q = poseMoveTargetQ_;
+          p.use_target_orientation = true;
+        } else {
+          p.target_q = q0_;
+          p.use_target_orientation = false;
+        }
+        planner_ = std::make_unique<TargetPosePlanner>(centerP_, q0_, p);
       } else {
         RCLCPP_WARN(this->get_logger(), "Unknown trajectoryType='%s'. Falling back to figure_eight.", trajectoryType_.c_str());
         FigureEightParams p;
@@ -461,6 +518,11 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   Eigen::Vector3d linearMoveEulerZyx_{Eigen::Vector3d::Zero()};
   bool linearMoveOffsetInToolFrame_{false};
   TimeScalingType linearMoveTimeScaling_{TimeScalingType::MinJerk};
+  bool poseMoveHasTarget_{false};
+  bool poseMoveHasOrientation_{false};
+  Eigen::Vector3d poseMoveTargetP_{Eigen::Vector3d::Zero()};
+  Eigen::Quaterniond poseMoveTargetQ_{Eigen::Quaterniond::Identity()};
+  TimeScalingType poseMoveTimeScaling_{TimeScalingType::MinJerk};
   PlannedCartesianTrajectory publishedTraj_;
   bool havePublishedTraj_{false};
 

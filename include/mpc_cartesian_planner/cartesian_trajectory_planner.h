@@ -88,4 +88,30 @@ class LinearMovePlanner final : public CartesianTrajectoryPlanner {
   bool have_start_time_{false};
 };
 
+struct TargetPoseParams {
+  double horizon_T = 2.0;
+  double dt = 0.05;
+  Eigen::Vector3d target_p = Eigen::Vector3d::Zero();               // world frame
+  Eigen::Quaterniond target_q = Eigen::Quaterniond::Identity();     // world frame
+  bool use_target_orientation = true;                               // if false, keep the initial orientation
+  TimeScalingType time_scaling = TimeScalingType::MinJerk;
+};
+
+class TargetPosePlanner final : public CartesianTrajectoryPlanner {
+ public:
+  TargetPosePlanner(const Eigen::Vector3d& start_p,
+                    const Eigen::Quaterniond& start_q,
+                    TargetPoseParams params);
+
+  PlannedCartesianTrajectory plan(const ocs2::SystemObservation& obs) override;
+  void setStartTime(double t_start) override { start_time_ = t_start; have_start_time_ = true; }
+
+ private:
+  Eigen::Vector3d p0_;
+  Eigen::Quaterniond q0_;
+  TargetPoseParams params_;
+  double start_time_{0.0};
+  bool have_start_time_{false};
+};
+
 }  // namespace mpc_cartesian_planner

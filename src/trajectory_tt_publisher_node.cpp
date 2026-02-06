@@ -251,7 +251,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
           poseMoveHasTarget_ = true;
           poseMoveHasOrientation_ = true;
           poseMoveTargetP_ = Eigen::Vector3d(pose[0], pose[1], pose[2]);
-          const Eigen::Quaterniond q(pose[6], pose[3], pose[4], pose[5]);  // [x y z qx qy qz qw]
+          const Eigen::Quaterniond q(pose[3], pose[4], pose[5], pose[6]);  // [x y z qw qx qy qz]
           if (q.norm() < 1e-12) {
             RCLCPP_WARN(this->get_logger(), "poseMoveTarget quaternion has near-zero norm. Ignoring orientation.");
             poseMoveHasOrientation_ = false;

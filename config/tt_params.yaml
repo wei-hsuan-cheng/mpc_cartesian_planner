@@ -23,11 +23,23 @@ trajectory_tt_publisher:
 
     # (poseMoveTarget) move along a straight line in the global frame from the initial EE pose to a specified target pose.
     # [x, y, z] or [x, y, z, thz, thy, thx] or [x, y, z, qw, qx, qy, qz] [m, rad, or unitless]
-    # poseMoveTarget: [0.45, 0.2, 0.7, 0.707, 0.0, 0.0, -0.707] # [x, y, z, qw, qx, qy, qz]
-    poseMoveTarget: [0.6, 0.4, 0.9] # [x, y, z]
+    poseMoveTarget: [0.45, 0.2, 0.7, 0.707, 0.0, 0.0, -0.707] # [x, y, z, qw, qx, qy, qz]
+    # poseMoveTarget: [0.6, 0.4, 0.9] # [x, y, z]
     # poseMoveTarget: [0.45, 0.2, 0.7, 0.0, 0.0, 0.0] # [x, y, z, thz, thy, thx]
     # poseMoveTarget: [] # empty -> stay at initial pose (no motion)
     poseMoveTimeScaling: min_jerk # linear, min_jerk
+
+    # Intervention: on DIVERGED or FINISHED, publish a HOLD target at the current EE pose and stop TT publishing.
+    interveneHoldOnDivergedOrFinished: true
+
+    # Optional: also switch the ros2_control controller on intervention/pause/resume via controller_manager.
+    switchMpcControllerOnIntervention: true
+    controllerManagerSwitchService: "/controller_manager/switch_controller"
+    mpcControllerName: "mpc_controller"
+
+    # Optional: publish a default OCS2 ModeSchedule before enabling MPC (so you don't have to manually `ros2 topic pub`).
+    publishModeScheduleOnEnable: true
+    modeScheduleMode: 1
 
 trajectory_progress_monitor:
   ros__parameters:

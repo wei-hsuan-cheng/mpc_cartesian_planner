@@ -5,6 +5,8 @@
  */
 
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -96,6 +98,28 @@ fromTargetMsg(const ocs2_msgs::msg::MpcTargetTrajectories& msg) {
 inline std::string statusToString(const TrackingMetrics& m) {
   // Keep the status mapping simple and consistent with TrajectoryMonitor.
   return toString(m.status);
+}
+
+inline bool isHoldTrajectory(const PlannedCartesianTrajectory& traj) {
+  if (traj.time.size() != 2 || traj.position.size() != 2 || traj.quat.size() != 2) {
+    return false;
+  }
+  constexpr double kPosEps = 1e-9;
+  constexpr double kAngEps = 1e-9;
+
+  const Eigen::Vector3d dp = traj.position[0] - traj.position[1];
+  if (dp.norm() > kPosEps) {
+    return false;
+  }
+
+  Eigen::Quaterniond q0 = traj.quat[0].normalized();
+  Eigen::Quaterniond q1 = traj.quat[1].normalized();
+  if (q0.dot(q1) < 0.0) {
+    q1.coeffs() *= -1.0;
+  }
+  const double dot = std::clamp(std::abs(q0.dot(q1)), 0.0, 1.0);
+  const double ang = 2.0 * std::acos(dot);
+  return ang <= kAngEps;
 }
 
 }  // namespace
@@ -200,14 +224,28 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
         robotName_ + "_mpc_target", rclcpp::QoS(1).reliable(),
         [&](const ocs2_msgs::msg::MpcTargetTrajectories::ConstSharedPtr msg) {
           const auto traj = fromTargetMsg(*msg);
-          std::lock_guard<std::mutex> lock(mtx_);
-          latestRef_ = traj;
-          haveRef_ =
-              !traj.empty() &&
-              traj.time.size() == traj.position.size() &&
-              traj.time.size() == traj.quat.size();
-          if (haveRef_) {
-            monitor_->setTrajectory(latestRef_);
+          const bool is_hold = isHoldTrajectory(traj);
+          bool wake = false;
+          {
+            std::lock_guard<std::mutex> lock(mtx_);
+            latestRef_ = traj;
+            haveRef_ =
+                !traj.empty() &&
+                traj.time.size() == traj.position.size() &&
+                traj.time.size() == traj.quat.size();
+            if (haveRef_) {
+              monitor_->setTrajectory(latestRef_);
+            }
+            // If we entered idle mode due to FINISHED/DIVERGED, only wake up when a new "real"
+            // trajectory arrives (ignore the 2-point HOLD trajectory published on intervention).
+            if (idle_ && haveRef_ && !is_hold) {
+              idle_ = false;
+              wake = true;
+            }
+          }
+          if (wake && timer_) {
+            timer_->reset();
+            RCLCPP_INFO(this->get_logger(), "New trajectory received. Progress monitor resumed.");
           }
         });
 
@@ -297,6 +335,7 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
 
     TrackingMetrics met;
     PlannedCartesianTrajectory traj;
+    bool enter_idle = false;
     {
       std::lock_guard<std::mutex> lock(mtx_);
       if (!haveRef_) {
@@ -305,6 +344,15 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
       }
       met = monitor_->update(obs.time, p, q);
       traj = latestRef_;
+
+      const bool terminal = (met.status == TrackingStatus::FINISHED) || (met.status == TrackingStatus::DIVERGED);
+      if (terminal && !idle_) {
+        idle_ = true;
+        enter_idle = true;
+      }
+    }
+    if (enter_idle && timer_) {
+      timer_->cancel();
     }
     const std::string status = statusToString(met);
 
@@ -343,10 +391,11 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
 
     publishClosestWaypointMarker(traj, met.closest_index);
 
-    if (met.status == TrackingStatus::FINISHED) {
-      RCLCPP_INFO(this->get_logger(), "Tracking finished. Progress monitor entering idle mode.");
-      if (timer_) {
-        timer_->cancel();
+    if (enter_idle) {
+      if (met.status == TrackingStatus::FINISHED) {
+        RCLCPP_INFO(this->get_logger(), "Tracking finished. Progress monitor entering idle mode.");
+      } else if (met.status == TrackingStatus::DIVERGED) {
+        RCLCPP_WARN(this->get_logger(), "Tracking diverged. Progress monitor entering idle mode.");
       }
     }
   }
@@ -381,6 +430,7 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
   SystemObservation latestObs_;
   PlannedCartesianTrajectory latestRef_;
   bool haveObs_{false}, haveRef_{false};
+  bool idle_{false};
 };
 
 }  // namespace mpc_cartesian_planner

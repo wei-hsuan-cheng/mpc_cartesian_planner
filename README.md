@@ -41,3 +41,17 @@ colcon build --symlink-install \
 - `figure_eight`: Periodic figure-eight around the initial EE pose.
 - `linear_move`: Apply a relative offset (global frame or tool frame) with `linearMoveTimeScaling` (`linear` / `min_jerk`).
 - `target_pose`: Move in a straight line (global frame) from the initial EE pose to an absolute target pose with `poseMoveTimeScaling` (`linear` / `min_jerk`).
+
+## Pause / Resume
+
+`trajectory_tt_publisher` provides a pause/resume service:
+
+```bash
+# Pause (publish HOLD at current EE pose)
+ros2 service call /<robotName>/trajectory_tracking/toggle_tt_publisher std_srvs/srv/SetBool "{data: false}"
+
+# Resume
+ros2 service call /<robotName>/trajectory_tracking/toggle_tt_publisher std_srvs/srv/SetBool "{data: true}"
+```
+
+If `publishModeScheduleOnEnable: true` (default), the TT publisher also publishes `/<robotName>_mode_schedule` (default: mode `1`) on enable/resume so you don't have to manually publish a `ModeSchedule` before activating `mpc_controller`.

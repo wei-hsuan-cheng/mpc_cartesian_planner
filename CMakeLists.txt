@@ -10,6 +10,8 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(controller_manager_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -35,7 +37,7 @@ add_library(mpc_cartesian_planner_lib
   src/trajectory_monitor.cpp
 )
 ament_target_dependencies(mpc_cartesian_planner_lib
-  rclcpp std_msgs geometry_msgs visualization_msgs tf2_ros
+  rclcpp std_msgs std_srvs controller_manager_msgs geometry_msgs visualization_msgs tf2_ros
   ocs2_core ocs2_mpc ocs2_msgs ocs2_ros_interfaces
   ocs2_mobile_manipulator ocs2_pinocchio_interface
   pinocchio Eigen3
@@ -44,7 +46,7 @@ ament_target_dependencies(mpc_cartesian_planner_lib
 add_executable(trajectory_tt_publisher_node src/trajectory_tt_publisher_node.cpp)
 target_link_libraries(trajectory_tt_publisher_node mpc_cartesian_planner_lib)
 ament_target_dependencies(trajectory_tt_publisher_node
-  rclcpp std_msgs geometry_msgs visualization_msgs tf2_ros
+  rclcpp std_msgs std_srvs controller_manager_msgs geometry_msgs visualization_msgs tf2_ros
   ocs2_core ocs2_mpc ocs2_msgs ocs2_ros_interfaces
   ocs2_mobile_manipulator ocs2_pinocchio_interface
   pinocchio Eigen3
@@ -53,7 +55,7 @@ ament_target_dependencies(trajectory_tt_publisher_node
 add_executable(trajectory_progress_monitor_node src/trajectory_progress_monitor_node.cpp)
 target_link_libraries(trajectory_progress_monitor_node mpc_cartesian_planner_lib)
 ament_target_dependencies(trajectory_progress_monitor_node
-  rclcpp std_msgs geometry_msgs visualization_msgs tf2_ros
+  rclcpp std_msgs std_srvs controller_manager_msgs geometry_msgs visualization_msgs tf2_ros
   ocs2_core ocs2_mpc ocs2_msgs ocs2_ros_interfaces
   ocs2_mobile_manipulator ocs2_pinocchio_interface
   pinocchio Eigen3

@@ -28,6 +28,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -36,14 +37,17 @@
 
 #include "rclcpp/rclcpp.hpp"
 
+#include <controller_manager_msgs/srv/switch_controller.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include <ocs2_core/reference/TargetTrajectories.h>
 #include <ocs2_mpc/SystemObservation.h>
+#include <ocs2_msgs/msg/mode_schedule.hpp>
 #include <ocs2_msgs/msg/mpc_observation.hpp>
 
 #include <ocs2_mobile_manipulator/MobileManipulatorInterface.h>
@@ -90,6 +94,45 @@ inline TimeScalingType parseTimeScaling(const std::string& s) {
   if (v == "linear") return TimeScalingType::Linear;
   if (v == "min_jerk" || v == "minjerk" || v == "min-jerk") return TimeScalingType::MinJerk;
   return TimeScalingType::MinJerk;
+}
+
+template <typename T, typename = void>
+struct has_member_activate_controllers : std::false_type {};
+template <typename T>
+struct has_member_activate_controllers<T, std::void_t<decltype(std::declval<T>().activate_controllers)>>
+    : std::true_type {};
+
+template <typename T, typename = void>
+struct has_member_deactivate_controllers : std::false_type {};
+template <typename T>
+struct has_member_deactivate_controllers<T, std::void_t<decltype(std::declval<T>().deactivate_controllers)>>
+    : std::true_type {};
+
+template <typename T, typename = void>
+struct has_member_start_controllers : std::false_type {};
+template <typename T>
+struct has_member_start_controllers<T, std::void_t<decltype(std::declval<T>().start_controllers)>>
+    : std::true_type {};
+
+template <typename T, typename = void>
+struct has_member_stop_controllers : std::false_type {};
+template <typename T>
+struct has_member_stop_controllers<T, std::void_t<decltype(std::declval<T>().stop_controllers)>>
+    : std::true_type {};
+
+template <typename T, typename = void>
+struct has_member_activate_asap : std::false_type {};
+template <typename T>
+struct has_member_activate_asap<T, std::void_t<decltype(std::declval<T>().activate_asap)>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_member_start_asap : std::false_type {};
+template <typename T>
+struct has_member_start_asap<T, std::void_t<decltype(std::declval<T>().start_asap)>> : std::true_type {};
+
+inline int32_t switchControllerStrictness() {
+  // controller_manager_msgs/srv/SwitchController: STRICT=2, BEST_EFFORT=1 (ROS 2 control convention)
+  return 2;
 }
 
 // Compute EE pose via Pinocchio FK using OCS2 pinocchio mapping.
@@ -193,6 +236,12 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<std::string>("linearMoveTimeScaling", std::string("min_jerk"));
     this->declare_parameter<std::vector<double>>("poseMoveTarget", std::vector<double>{});
     this->declare_parameter<std::string>("poseMoveTimeScaling", std::string("min_jerk"));
+    this->declare_parameter<bool>("interveneHoldOnDivergedOrFinished", false);
+    this->declare_parameter<bool>("switchMpcControllerOnIntervention", false);
+    this->declare_parameter<std::string>("controllerManagerSwitchService", std::string("/controller_manager/switch_controller"));
+    this->declare_parameter<std::string>("mpcControllerName", std::string("mpc_controller"));
+    this->declare_parameter<bool>("publishModeScheduleOnEnable", true);
+    this->declare_parameter<int>("modeScheduleMode", 1);
 
     taskFile_ = this->get_parameter("taskFile").as_string();
     urdfFile_ = this->get_parameter("urdfFile").as_string();
@@ -231,6 +280,12 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     }
     linearMoveOffsetInToolFrame_ = this->get_parameter("linearMoveOffsetInToolFrame").as_bool();
     linearMoveTimeScaling_ = parseTimeScaling(this->get_parameter("linearMoveTimeScaling").as_string());
+    interveneHoldOnDivergedOrFinished_ = this->get_parameter("interveneHoldOnDivergedOrFinished").as_bool();
+    switchMpcControllerOnIntervention_ = this->get_parameter("switchMpcControllerOnIntervention").as_bool();
+    controllerManagerSwitchService_ = this->get_parameter("controllerManagerSwitchService").as_string();
+    mpcControllerName_ = this->get_parameter("mpcControllerName").as_string();
+    publishModeScheduleOnEnable_ = this->get_parameter("publishModeScheduleOnEnable").as_bool();
+    modeScheduleMode_ = static_cast<int>(this->get_parameter("modeScheduleMode").as_int());
 
     {
       const auto pose = this->get_parameter("poseMoveTarget").as_double_array();
@@ -290,6 +345,17 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     // Publishers
     // In one-shot mode we latch the last target so late-joining subscribers can still receive it.
     trajPub_ = std::make_unique<TrajectoryPublisher>(*this, robotName_, /*latch=*/publishOnce_);
+    modeSchedulePub_ = this->create_publisher<ocs2_msgs::msg::ModeSchedule>(
+        robotName_ + std::string("_mode_schedule"), rclcpp::QoS(1).reliable());
+    // Publish an initial ModeSchedule once at startup so the controller has a mode even before activation.
+    modeScheduleStartupTimer_ = this->create_wall_timer(
+        std::chrono::milliseconds(200),
+        [this]() {
+          publishDefaultModeSchedule("STARTUP");
+          if (modeScheduleStartupTimer_) {
+            modeScheduleStartupTimer_->cancel();
+          }
+        });
 
     if (publishViz_) {
       markerPub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -300,6 +366,68 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     if (publishTF_) {
       tfBroadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
     }
+
+    if (switchMpcControllerOnIntervention_ && !controllerManagerSwitchService_.empty()) {
+      switchControllerClient_ =
+          this->create_client<controller_manager_msgs::srv::SwitchController>(controllerManagerSwitchService_);
+    }
+
+    toggleTrackingSrv_ = this->create_service<std_srvs::srv::SetBool>(
+        robotName_ + "/trajectory_tracking/toggle_tt_publisher",
+        [this](const std::shared_ptr<rmw_request_id_t> /*req_header*/,
+               const std::shared_ptr<std_srvs::srv::SetBool::Request> req,
+               std::shared_ptr<std_srvs::srv::SetBool::Response> res) {
+          const bool enable = req->data;
+          const bool wasPaused = trackingFinished_;
+
+          if (!enable) {
+            if (wasPaused) {
+              res->success = true;
+              res->message = "TT publisher already paused.";
+              return;
+            }
+
+            // Pause: publish a HOLD target at the current EE pose (if possible) and stop the timer.
+            SystemObservation obs;
+            bool haveObsLocal = false;
+            {
+              std::lock_guard<std::mutex> lock(mtx_);
+              haveObsLocal = haveObs_;
+              if (haveObsLocal) {
+                obs = latestObs_;
+              }
+            }
+
+            if (haveObsLocal) {
+              publishHoldTrajectory(obs, "MANUAL_PAUSE");
+            } else {
+              RCLCPP_WARN(this->get_logger(), "Pause requested but no observation received yet; not publishing hold target.");
+            }
+
+            trackingFinished_ = true;
+            if (timer_) timer_->cancel();
+            requestSwitchMpcController(/*activate=*/false, "MANUAL_PAUSE");
+
+            res->success = true;
+            res->message = "TT publisher paused (hold target published).";
+            return;
+          }
+
+          // Enable (start/resume). If previously paused, reset the planner so the next run starts from current EE.
+          if (wasPaused) {
+            trackingFinished_ = false;
+            initialized_ = false;
+            planner_.reset();
+            publishedOnce_ = false;
+          }
+
+          publishDefaultModeSchedule(wasPaused ? "MANUAL_RESUME" : "MANUAL_ENABLE");
+          requestSwitchMpcController(/*activate=*/true, "MANUAL_RESUME");
+          if (timer_) timer_->reset();
+
+          res->success = true;
+          res->message = wasPaused ? "TT publisher resumed." : "TT publisher enabled.";
+        });
 
     // Observation subscription
     obsSub_ = this->create_subscription<ocs2_msgs::msg::MpcObservation>(
@@ -314,13 +442,40 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     trackingStatusSub_ = this->create_subscription<std_msgs::msg::String>(
         robotName_ + "/trajectory_tracking/tracking_status", rclcpp::QoS(1).reliable(),
         [this](const std_msgs::msg::String::ConstSharedPtr msg) {
-          if (msg->data != "FINISHED") return;
+          const bool finished = (msg->data == "FINISHED");
+          const bool diverged = (msg->data == "DIVERGED");
+          if (!finished && !diverged) return;
+
           if (trackingFinished_) return;
-          trackingFinished_ = true;
-          RCLCPP_INFO(this->get_logger(), "Tracking finished. TT publisher entering idle mode.");
-          if (timer_) {
-            timer_->cancel();
+
+          if (interveneHoldOnDivergedOrFinished_) {
+            SystemObservation obs;
+            bool haveObsLocal = false;
+            {
+              std::lock_guard<std::mutex> lock(mtx_);
+              haveObsLocal = haveObs_;
+              if (!haveObsLocal) {
+                RCLCPP_WARN(this->get_logger(),
+                            "Intervention requested (%s) but no observation received yet; skipping hold publish.",
+                            msg->data.c_str());
+              } else {
+                obs = latestObs_;
+              }
+            }
+
+            if (haveObsLocal) {
+              publishHoldTrajectory(obs, msg->data);
+            }
           }
+
+          trackingFinished_ = true;
+          requestSwitchMpcController(/*activate=*/false, msg->data);
+          if (finished) {
+            RCLCPP_INFO(this->get_logger(), "Tracking finished. TT publisher entering idle mode.");
+          } else {
+            RCLCPP_WARN(this->get_logger(), "Tracking diverged. TT publisher entering idle mode.");
+          }
+          if (timer_) timer_->cancel();
         });
 
     // Timer
@@ -336,6 +491,128 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   }
 
  private:
+  void publishHoldTrajectory(const SystemObservation& obs, const std::string& reason) {
+    if (!trajPub_) return;
+
+    Eigen::Vector3d p_hold = centerP_;
+    Eigen::Quaterniond q_hold = q0_;
+
+    bool ok = false;
+    if (pin_ && mapping_ && interface_) {
+      std::lock_guard<std::mutex> lock(pinMtx_);
+      ok = computeEePose(*pin_, *mapping_, eeFrameId_, obs.state, p_hold, q_hold);
+    }
+    if (!ok) {
+      RCLCPP_WARN(this->get_logger(),
+                  "Failed to compute current EE pose for hold (reason=%s). Using last known pose instead.",
+                  reason.c_str());
+      q_hold.normalize();
+    }
+
+    PlannedCartesianTrajectory hold;
+    const double t0 = obs.time;
+    const double T = std::max(1e-3, horizon_);
+    hold.time = {t0, t0 + T};
+    hold.position = {p_hold, p_hold};
+    hold.quat = {q_hold, q_hold};
+
+    trajPub_->publishEeTarget(hold, obs);
+
+    publishedTraj_ = hold;
+    havePublishedTraj_ = true;
+    publishedOnce_ = true;
+
+    RCLCPP_INFO(this->get_logger(), "Published HOLD target (reason=%s) at t=%.3f", reason.c_str(), t0);
+  }
+
+  void requestSwitchMpcController(bool activate, const std::string& reason) {
+    if (!switchMpcControllerOnIntervention_) return;
+    if (!switchControllerClient_ || mpcControllerName_.empty()) return;
+
+    if (!switchControllerClient_->wait_for_service(std::chrono::seconds(0))) {
+      RCLCPP_WARN(this->get_logger(),
+                  "controller_manager switch service '%s' not available; cannot switch '%s' (activate=%d, reason=%s).",
+                  controllerManagerSwitchService_.c_str(),
+                  mpcControllerName_.c_str(),
+                  static_cast<int>(activate),
+                  reason.c_str());
+      return;
+    }
+
+    using Request = controller_manager_msgs::srv::SwitchController::Request;
+    auto req = std::make_shared<Request>();
+
+    // Prefer activate/deactivate fields (stop/start are deprecated on newer ros2_control).
+    constexpr bool kUseActivateFields =
+        has_member_activate_controllers<Request>::value || has_member_deactivate_controllers<Request>::value;
+    if constexpr (kUseActivateFields) {
+      if constexpr (has_member_activate_controllers<Request>::value) {
+        if (activate) req->activate_controllers = {mpcControllerName_};
+      }
+      if constexpr (has_member_deactivate_controllers<Request>::value) {
+        if (!activate) req->deactivate_controllers = {mpcControllerName_};
+      }
+    } else {
+      if constexpr (has_member_start_controllers<Request>::value) {
+        if (activate) req->start_controllers = {mpcControllerName_};
+      }
+      if constexpr (has_member_stop_controllers<Request>::value) {
+        if (!activate) req->stop_controllers = {mpcControllerName_};
+      }
+    }
+
+    req->strictness = switchControllerStrictness();
+    if constexpr (has_member_activate_asap<Request>::value) {
+      req->activate_asap = true;
+    } else if constexpr (has_member_start_asap<Request>::value) {
+      req->start_asap = true;
+    }
+
+    req->timeout.sec = 0;
+    req->timeout.nanosec = 0;
+
+    using Future = rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedFuture;
+    auto cb = [this, activate, reason](Future future) {
+      const auto resp = future.get();
+      if (!resp->ok) {
+        RCLCPP_WARN(this->get_logger(),
+                    "Failed to switch mpc controller '%s' (activate=%d, reason=%s).",
+                    mpcControllerName_.c_str(),
+                    static_cast<int>(activate),
+                    reason.c_str());
+        return;
+      }
+      RCLCPP_INFO(this->get_logger(),
+                  "Switched mpc controller '%s' (activate=%d, reason=%s).",
+                  mpcControllerName_.c_str(),
+                  static_cast<int>(activate),
+                  reason.c_str());
+    };
+    (void)switchControllerClient_->async_send_request(req, cb);
+  }
+
+  void publishDefaultModeSchedule(const std::string& reason) {
+    if (!publishModeScheduleOnEnable_) return;
+    if (!modeSchedulePub_) return;
+
+    const int clamped_mode = std::clamp(modeScheduleMode_, -128, 127);
+    if (clamped_mode != modeScheduleMode_) {
+      RCLCPP_WARN(this->get_logger(),
+                  "modeScheduleMode=%d is out of int8 range; clamping to %d.",
+                  modeScheduleMode_,
+                  clamped_mode);
+    }
+
+    ocs2_msgs::msg::ModeSchedule msg;
+    msg.event_times = {};
+    msg.mode_sequence = {static_cast<int8_t>(clamped_mode)};
+    modeSchedulePub_->publish(msg);
+    RCLCPP_INFO(this->get_logger(),
+                "Published default mode schedule (mode=%d, reason=%s).",
+                clamped_mode,
+                reason.c_str());
+  }
+
   void onTimer() {
     if (trackingFinished_) {
       return;
@@ -354,6 +631,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
       if (interface_ && pin_ && mapping_) {
         Eigen::Vector3d p;
         Eigen::Quaterniond q;
+        std::lock_guard<std::mutex> lock(pinMtx_);
         const bool ok = computeEePose(*pin_, *mapping_, eeFrameId_, obs.state, p, q);
         if (ok) {
           centerP_ = p;
@@ -523,6 +801,12 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   Eigen::Vector3d poseMoveTargetP_{Eigen::Vector3d::Zero()};
   Eigen::Quaterniond poseMoveTargetQ_{Eigen::Quaterniond::Identity()};
   TimeScalingType poseMoveTimeScaling_{TimeScalingType::MinJerk};
+  bool interveneHoldOnDivergedOrFinished_{false};
+  bool switchMpcControllerOnIntervention_{false};
+  std::string controllerManagerSwitchService_{"/controller_manager/switch_controller"};
+  std::string mpcControllerName_{"mpc_controller"};
+  bool publishModeScheduleOnEnable_{true};
+  int modeScheduleMode_{1};
   PlannedCartesianTrajectory publishedTraj_;
   bool havePublishedTraj_{false};
 
@@ -532,6 +816,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   ocs2::mobile_manipulator::ManipulatorModelInfo modelInfo_;
   std::unique_ptr<ocs2::mobile_manipulator::MobileManipulatorPinocchioMapping> mapping_;
   std::size_t eeFrameId_{0};
+  std::mutex pinMtx_;
 
   // Planner
   bool initialized_{false};
@@ -542,6 +827,10 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
 
   // ROS I/O
   std::unique_ptr<TrajectoryPublisher> trajPub_;
+  rclcpp::Publisher<ocs2_msgs::msg::ModeSchedule>::SharedPtr modeSchedulePub_;
+  rclcpp::TimerBase::SharedPtr modeScheduleStartupTimer_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr toggleTrackingSrv_;
+  rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switchControllerClient_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr markerPub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr posePub_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster_;

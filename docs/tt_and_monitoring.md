@@ -9,6 +9,9 @@ Launch + parameters:
 - Demo launch file: [`launch/tt_demo.launch.py#L8`](../launch/tt_demo.launch.py#L8)
 - Default params: [`config/tt_params.yaml#L1`](../config/tt_params.yaml#L1)
 
+Runtime control:
+- Service (pause/resume TT publishing): **`<robotName>/trajectory_tracking/toggle_tt_publisher`** (`std_srvs/srv/SetBool`)
+
 ## 1) What “TT” means here
 
 OCS2-based MPC expects a target trajectory message (`MpcTargetTrajectories`) on `<robotName>_mpc_target`. The TT publisher node produces such a target in *Cartesian pose space*:
@@ -22,6 +25,7 @@ OCS2-based MPC expects a target trajectory message (`MpcTargetTrajectories`) on 
 
 - Subscribes: `<robotName>_mpc_observation` (`ocs2_msgs/msg/MpcObservation`). See [`src/trajectory_tt_publisher_node.cpp#L169`](../src/trajectory_tt_publisher_node.cpp#L169).
 - Publishes: `<robotName>_mpc_target` (`ocs2_msgs/msg/MpcTargetTrajectories`) via `TrajectoryPublisher`. See [`src/trajectory_publisher.cpp#L8`](../src/trajectory_publisher.cpp#L8).
+- Provides: `<robotName>/trajectory_tracking/toggle_tt_publisher` (`std_srvs/srv/SetBool`) to pause (publish HOLD at current EE pose) / resume. See [`src/trajectory_tt_publisher_node.cpp#L309`](../src/trajectory_tt_publisher_node.cpp#L309).
 - Optional visualization:
   - `/mobile_manipulator/targetStateTrajectory` (`MarkerArray`). See [`src/trajectory_tt_publisher_node.cpp#L159`](../src/trajectory_tt_publisher_node.cpp#L159).
   - `/mobile_manipulator/targetPoseTrajectory` (`PoseArray`). See [`src/trajectory_tt_publisher_node.cpp#L159`](../src/trajectory_tt_publisher_node.cpp#L159).
@@ -191,6 +195,10 @@ The monitor node:
   - `/mobile_manipulator/closestTargetWaypoint` (`MarkerArray`, red sphere at the currently matched waypoint index). See [`src/trajectory_progress_monitor_node.cpp#L184`](../src/trajectory_progress_monitor_node.cpp#L184) and [`src/trajectory_progress_monitor_node.cpp#L218`](../src/trajectory_progress_monitor_node.cpp#L218).
 
 The reference message is converted back into `PlannedCartesianTrajectory` (including the quaternion layout conversion). See [`src/trajectory_progress_monitor_node.cpp#L73`](../src/trajectory_progress_monitor_node.cpp#L73).
+
+Terminal behavior:
+- When `TrackingStatus` becomes `FINISHED` or `DIVERGED`, the progress monitor enters **idle mode** (stops its timer) so the status does not immediately flip back to `ON_TRACK` due to the optional HOLD trajectory.
+- It automatically resumes when a new non-HOLD target trajectory is received.
 
 ### 5.2 EE pose estimation (FK)
 

@@ -1,10 +1,12 @@
 trajectory_tt_publisher:
   ros__parameters:
-    publishRate: 50.0
+    publishRate: 100.0
+    publishOnce: true
+    commandFrameId: command
     horizon: 5.0
     dt: 0.05
     amplitude: 0.20
-    frequency: 0.1
+    frequency: 0.5
 
     axisX: 1.0
     axisY: 0.0
@@ -12,7 +14,9 @@ trajectory_tt_publisher:
 
 trajectory_progress_monitor:
   ros__parameters:
-    monitorRate: 50.0
+    monitorRate: 100.0
+    publishTF: true
+    closestFrameId: command_closest
     window: 20
     maxBacktrack: 5
 

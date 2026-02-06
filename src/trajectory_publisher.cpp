@@ -5,9 +5,13 @@
 
 namespace mpc_cartesian_planner {
 
-TrajectoryPublisher::TrajectoryPublisher(rclcpp::Node& node, const std::string& robotName) {
+TrajectoryPublisher::TrajectoryPublisher(rclcpp::Node& node, const std::string& robotName, bool latch) {
   topic_ = robotName + std::string("_mpc_target");
-  pub_ = node.create_publisher<ocs2_msgs::msg::MpcTargetTrajectories>(topic_, 1);
+  auto qos = rclcpp::QoS(1).reliable();
+  if (latch) {
+    qos.transient_local();
+  }
+  pub_ = node.create_publisher<ocs2_msgs::msg::MpcTargetTrajectories>(topic_, qos);
 }
 
 void TrajectoryPublisher::publishEeTarget(const PlannedCartesianTrajectory& traj,

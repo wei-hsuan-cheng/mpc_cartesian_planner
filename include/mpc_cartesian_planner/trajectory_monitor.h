@@ -28,6 +28,7 @@ struct TrackingMetrics {
 struct MonitorParams {
   int window = 20;                 // +/- samples for window search
   int max_backtrack = 5;           // prevent big backward jumps at self-intersection
+  double update_dt = 0.05;         // monitor update period (seconds)
   double on_track_pos = 0.005;     // 5 mm
   double on_track_ori_deg = 5.0;   // deg
   double diverged_pos = 0.03;      // 3 cm
@@ -57,6 +58,8 @@ class TrajectoryMonitor {
   PlannedCartesianTrajectory traj_;
   std::size_t last_best_{0};
   double diverged_accum_{0.0};
+  double last_update_time_{0.0};
+  bool have_last_update_time_{false};
 };
 
 std::string toString(TrackingStatus s);

@@ -14,8 +14,10 @@
 
 #include "rclcpp/rclcpp.hpp"
 
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <tf2_ros/transform_broadcaster.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include <ocs2_mpc/SystemObservation.h>
@@ -114,6 +116,8 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
     this->declare_parameter<double>("monitorRate", 50.0);
     this->declare_parameter<std::string>("trajectoryGlobalFrame", std::string("world"));
     this->declare_parameter<bool>("publishViz", true);
+    this->declare_parameter<bool>("publishTF", false);
+    this->declare_parameter<std::string>("closestFrameId", std::string("command_closest"));
 
     // Monitor params (match config/tt_params.yaml)
     this->declare_parameter<int>("window", 20);
@@ -135,10 +139,17 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
 
     globalFrame_ = this->get_parameter("trajectoryGlobalFrame").as_string();
     publishViz_ = this->get_parameter("publishViz").as_bool();
+    publishTF_ = this->get_parameter("publishTF").as_bool();
+    closestFrameId_ = this->get_parameter("closestFrameId").as_string();
+    if (closestFrameId_.empty()) closestFrameId_ = "command_closest";
+    if (publishTF_) {
+      tfBroadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+    }
 
     MonitorParams mp;
     mp.window = this->get_parameter("window").as_int();
     mp.max_backtrack = this->get_parameter("maxBacktrack").as_int();
+    mp.update_dt = monitorPeriod_.count();
     mp.on_track_pos = this->get_parameter("onTrackPos").as_double();
     mp.on_track_ori_deg = this->get_parameter("onTrackOriDeg").as_double();
     mp.diverged_pos = this->get_parameter("divergedPos").as_double();
@@ -165,9 +176,11 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
 
     // --- Publishers ---------------------------------------------------------
     statusPub_ =
-        this->create_publisher<std_msgs::msg::String>("tracking_status", 10);
+        this->create_publisher<std_msgs::msg::String>(
+            robotName_ + "/trajectory_tracking/tracking_status", 10);
     metricsPub_ =
-        this->create_publisher<std_msgs::msg::Float64MultiArray>("tracking_metrics", 10);
+        this->create_publisher<std_msgs::msg::Float64MultiArray>(
+            robotName_ + "/trajectory_tracking/tracking_metric", 10);
     if (publishViz_) {
       closestWaypointPub_ =
           this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -310,6 +323,24 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
         static_cast<double>(met.closest_index)};
     metricsPub_->publish(m);
 
+    if (publishTF_ && tfBroadcaster_ && !traj.empty() && met.closest_index < traj.size()) {
+      const auto& p_closest = traj.position[met.closest_index];
+      const auto q_closest = traj.quat[met.closest_index].normalized();
+
+      geometry_msgs::msg::TransformStamped tf;
+      tf.header.stamp = this->now();
+      tf.header.frame_id = globalFrame_;
+      tf.child_frame_id = closestFrameId_;
+      tf.transform.translation.x = p_closest.x();
+      tf.transform.translation.y = p_closest.y();
+      tf.transform.translation.z = p_closest.z();
+      tf.transform.rotation.x = q_closest.x();
+      tf.transform.rotation.y = q_closest.y();
+      tf.transform.rotation.z = q_closest.z();
+      tf.transform.rotation.w = q_closest.w();
+      tfBroadcaster_->sendTransform(tf);
+    }
+
     publishClosestWaypointMarker(traj, met.closest_index);
   }
 
@@ -317,6 +348,9 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
   std::string taskFile_, urdfFile_, libFolder_, robotName_;
   std::string globalFrame_{"world"};
   bool publishViz_{true};
+  bool publishTF_{false};
+  std::string closestFrameId_{"command_closest"};
+  std::shared_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster_;
 
   std::chrono::duration<double> monitorPeriod_{0.02};
 

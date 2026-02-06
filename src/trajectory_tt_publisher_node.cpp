@@ -22,6 +22,7 @@
  */
 
 #include <chrono>
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <mutex>
@@ -99,6 +100,50 @@ inline bool computeEePose(ocs2::PinocchioInterface& pin,
   return true;
 }
 
+inline bool sampleTrajectoryAtTime(const PlannedCartesianTrajectory& traj,
+                                   double t,
+                                   Eigen::Vector3d& p_out,
+                                   Eigen::Quaterniond& q_out) {
+  if (traj.empty() ||
+      traj.time.size() != traj.position.size() ||
+      traj.time.size() != traj.quat.size()) {
+    return false;
+  }
+
+  if (t <= traj.time.front()) {
+    p_out = traj.position.front();
+    q_out = traj.quat.front();
+    return true;
+  }
+  if (t >= traj.time.back()) {
+    p_out = traj.position.back();
+    q_out = traj.quat.back();
+    return true;
+  }
+
+  const auto it = std::upper_bound(traj.time.begin(), traj.time.end(), t);
+  if (it == traj.time.begin() || it == traj.time.end()) {
+    return false;
+  }
+  const std::size_t i1 = static_cast<std::size_t>(it - traj.time.begin());
+  const std::size_t i0 = i1 - 1;
+
+  const double t0 = traj.time[i0];
+  const double t1 = traj.time[i1];
+  const double denom = t1 - t0;
+  const double alpha = (std::abs(denom) < 1e-12) ? 0.0 : (t - t0) / denom;
+
+  p_out = (1.0 - alpha) * traj.position[i0] + alpha * traj.position[i1];
+
+  Eigen::Quaterniond q0 = traj.quat[i0].normalized();
+  Eigen::Quaterniond q1 = traj.quat[i1].normalized();
+  if (q0.dot(q1) < 0.0) {
+    q1.coeffs() *= -1.0;
+  }
+  q_out = q0.slerp(alpha, q1).normalized();
+  return true;
+}
+
 }  // namespace
 
 class TrajectoryTTPublisherNode final : public rclcpp::Node {
@@ -122,6 +167,8 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<std::string>("trajectoryGlobalFrame", std::string("world"));
     this->declare_parameter<bool>("publishViz", true);
     this->declare_parameter<bool>("publishTF", true);
+    this->declare_parameter<bool>("publishOnce", false);
+    this->declare_parameter<std::string>("commandFrameId", std::string("command"));
 
     taskFile_ = this->get_parameter("taskFile").as_string();
     urdfFile_ = this->get_parameter("urdfFile").as_string();
@@ -137,6 +184,9 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     globalFrame_ = this->get_parameter("trajectoryGlobalFrame").as_string();
     publishViz_ = this->get_parameter("publishViz").as_bool();
     publishTF_ = this->get_parameter("publishTF").as_bool();
+    publishOnce_ = this->get_parameter("publishOnce").as_bool();
+    commandFrameId_ = this->get_parameter("commandFrameId").as_string();
+    if (commandFrameId_.empty()) commandFrameId_ = "command";
 
     if (!taskFile_.empty() && !urdfFile_.empty() && !libFolder_.empty()) {
       try {
@@ -154,7 +204,8 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     }
 
     // Publishers
-    trajPub_ = std::make_unique<TrajectoryPublisher>(*this, robotName_);
+    // In one-shot mode we latch the last target so late-joining subscribers can still receive it.
+    trajPub_ = std::make_unique<TrajectoryPublisher>(*this, robotName_, /*latch=*/publishOnce_);
 
     if (publishViz_) {
       markerPub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -181,6 +232,10 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
 
     RCLCPP_INFO(this->get_logger(), "TT publisher started. Publishing to %s at %.1f Hz",
                 trajPub_->topic().c_str(), publishRate_);
+    if (publishOnce_) {
+      RCLCPP_INFO(this->get_logger(),
+                  "publishOnce=true: will publish the target trajectory once (use 'horizon' as total duration) and then stop publishing.");
+    }
   }
 
  private:
@@ -220,27 +275,44 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     }
 
     if (!planner_) return;
-    const auto traj = planner_->plan(obs);
 
-    // Publish EE target
-    trajPub_->publishEeTarget(traj, obs);
+    PlannedCartesianTrajectory traj;
+    if (!publishOnce_ || !publishedOnce_) {
+      traj = planner_->plan(obs);
+
+      // Publish EE target
+      trajPub_->publishEeTarget(traj, obs);
+
+      if (publishViz_ && markerPub_ && posePub_) {
+        publishViz(traj);
+      }
+
+      if (publishOnce_ && !publishedOnce_) {
+        publishedTraj_ = traj;
+        havePublishedTraj_ = !publishedTraj_.empty();
+        publishedOnce_ = true;
+        RCLCPP_INFO(this->get_logger(), "One-shot trajectory published (%zu samples).", traj.size());
+      }
+    }
 
     if (publishTF_ && tfBroadcaster_) {
-      publishCommandTf(traj);
-    }
-    if (publishViz_ && markerPub_ && posePub_) {
-      publishViz(traj);
+      if (publishOnce_ && publishedOnce_ && havePublishedTraj_) {
+        Eigen::Vector3d p;
+        Eigen::Quaterniond q;
+        if (sampleTrajectoryAtTime(publishedTraj_, obs.time, p, q)) {
+          publishCommandTf(p, q);
+        }
+      } else if (!traj.empty()) {
+        publishCommandTf(traj.position.front(), traj.quat.front());
+      }
     }
   }
 
-  void publishCommandTf(const PlannedCartesianTrajectory& traj) {
-    if (traj.time.empty() || traj.position.empty() || traj.quat.empty()) return;
-    const auto& p = traj.position.front();
-    const auto& q = traj.quat.front();
+  void publishCommandTf(const Eigen::Vector3d& p, const Eigen::Quaterniond& q) {
     geometry_msgs::msg::TransformStamped tf;
     tf.header.stamp = this->now();
     tf.header.frame_id = globalFrame_;
-    tf.child_frame_id = "command";
+    tf.child_frame_id = commandFrameId_;
     tf.transform.translation.x = p.x();
     tf.transform.translation.y = p.y();
     tf.transform.translation.z = p.z();
@@ -301,6 +373,11 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   Eigen::Vector3d axis_{0, 0, 1};
   bool publishViz_{true};
   bool publishTF_{true};
+  bool publishOnce_{true};
+  bool publishedOnce_{false};
+  std::string commandFrameId_{"command"};
+  PlannedCartesianTrajectory publishedTraj_;
+  bool havePublishedTraj_{false};
 
   // OCS2 / Pinocchio
   std::unique_ptr<ocs2::mobile_manipulator::MobileManipulatorInterface> interface_;

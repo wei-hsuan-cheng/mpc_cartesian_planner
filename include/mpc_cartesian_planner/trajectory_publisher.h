@@ -13,7 +13,7 @@ namespace mpc_cartesian_planner {
 
 class TrajectoryPublisher {
  public:
-  TrajectoryPublisher(rclcpp::Node& node, const std::string& robotName);
+  TrajectoryPublisher(rclcpp::Node& node, const std::string& robotName, bool latch = false);
 
   // Publish EE target as [px py pz qx qy qz qw]
   void publishEeTarget(const PlannedCartesianTrajectory& traj, const ocs2::SystemObservation& obs);

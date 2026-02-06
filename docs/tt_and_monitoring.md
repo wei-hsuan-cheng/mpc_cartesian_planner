@@ -25,7 +25,7 @@ OCS2-based MPC expects a target trajectory message (`MpcTargetTrajectories`) on 
 - Optional visualization:
   - `/mobile_manipulator/targetStateTrajectory` (`MarkerArray`). See [`src/trajectory_tt_publisher_node.cpp#L159`](../src/trajectory_tt_publisher_node.cpp#L159).
   - `/mobile_manipulator/targetPoseTrajectory` (`PoseArray`). See [`src/trajectory_tt_publisher_node.cpp#L159`](../src/trajectory_tt_publisher_node.cpp#L159).
-  - TF: `<trajectoryGlobalFrame> -> command`. See [`src/trajectory_tt_publisher_node.cpp#L236`](../src/trajectory_tt_publisher_node.cpp#L236).
+  - TF: `<trajectoryGlobalFrame> -> <commandFrameId>` (default: `command`). See [`src/trajectory_tt_publisher_node.cpp#L311`](../src/trajectory_tt_publisher_node.cpp#L311).
 
 ### 2.2 One-time initialization (first observation)
 
@@ -48,6 +48,10 @@ Each tick:
 2) Plans a fresh horizon starting at the current observation time `t0 = obs.time`. See [`src/cartesian_trajectory_planner.cpp#L33`](../src/cartesian_trajectory_planner.cpp#L33).
 3) Publishes the EE target trajectory as `MpcTargetTrajectories`. See [`src/trajectory_tt_publisher_node.cpp#L223`](../src/trajectory_tt_publisher_node.cpp#L223) and [`src/trajectory_publisher.cpp#L13`](../src/trajectory_publisher.cpp#L13).
 4) Optionally publishes TF + visualization. See [`src/trajectory_tt_publisher_node.cpp#L228`](../src/trajectory_tt_publisher_node.cpp#L228).
+
+Note: in the default *receding-horizon* behavior (publishing a new horizon each tick), the monitor’s `progress` (normalized waypoint index) will typically stay near zero, since the closest waypoint is usually near the start of the latest horizon.
+
+If you want a **finite trajectory** with meaningful `progress` and a terminal `FINISHED` state, set `publishOnce: true` in the TT publisher params. In this mode the node publishes the target trajectory once (with `horizon` as the total duration) and then stops publishing.
 
 ## 3) Planner math (Figure Eight)
 
@@ -137,9 +141,9 @@ The monitor node:
   - `<robotName>_mpc_observation` for the current state/time. See [`src/trajectory_progress_monitor_node.cpp#L178`](../src/trajectory_progress_monitor_node.cpp#L178).
   - `<robotName>_mpc_target` for the reference trajectory. See [`src/trajectory_progress_monitor_node.cpp#L186`](../src/trajectory_progress_monitor_node.cpp#L186).
 - Publishes:
-  - `tracking_status` (`std_msgs/String`). See [`src/trajectory_progress_monitor_node.cpp#L167`](../src/trajectory_progress_monitor_node.cpp#L167).
-  - `tracking_metrics` (`std_msgs/Float64MultiArray`). See [`src/trajectory_progress_monitor_node.cpp#L169`](../src/trajectory_progress_monitor_node.cpp#L169).
-  - `/mobile_manipulator/closestTargetWaypoint` (`MarkerArray`, red sphere at the currently matched waypoint index). See [`src/trajectory_progress_monitor_node.cpp#L171`](../src/trajectory_progress_monitor_node.cpp#L171) and [`src/trajectory_progress_monitor_node.cpp#L207`](../src/trajectory_progress_monitor_node.cpp#L207).
+  - `<robotName>/trajectory_tracking/tracking_status` (`std_msgs/String`). See [`src/trajectory_progress_monitor_node.cpp#L178`](../src/trajectory_progress_monitor_node.cpp#L178).
+  - `<robotName>/trajectory_tracking/tracking_metric` (`std_msgs/Float64MultiArray`). See [`src/trajectory_progress_monitor_node.cpp#L181`](../src/trajectory_progress_monitor_node.cpp#L181).
+  - `/mobile_manipulator/closestTargetWaypoint` (`MarkerArray`, red sphere at the currently matched waypoint index). See [`src/trajectory_progress_monitor_node.cpp#L184`](../src/trajectory_progress_monitor_node.cpp#L184) and [`src/trajectory_progress_monitor_node.cpp#L218`](../src/trajectory_progress_monitor_node.cpp#L218).
 
 The reference message is converted back into `PlannedCartesianTrajectory` (including the quaternion layout conversion). See [`src/trajectory_progress_monitor_node.cpp#L73`](../src/trajectory_progress_monitor_node.cpp#L73).
 
@@ -231,14 +235,14 @@ See [`src/trajectory_monitor.cpp#L17`](../src/trajectory_monitor.cpp#L17).
 ### 6.5 Status logic
 
 The monitor emits one of:
-- `FINISHED` if progress is high enough and position error is small. See [`src/trajectory_monitor.cpp#L69`](../src/trajectory_monitor.cpp#L69).
-- `ON_TRACK` if both position and orientation errors are within thresholds. See [`src/trajectory_monitor.cpp#L76`](../src/trajectory_monitor.cpp#L76).
-- `DIVERGED` if position error stays above `diverged_pos` for long enough. See [`src/trajectory_monitor.cpp#L83`](../src/trajectory_monitor.cpp#L83).
-- Otherwise `LAGGING`. See [`src/trajectory_monitor.cpp#L94`](../src/trajectory_monitor.cpp#L94).
+- `FINISHED` if progress is high enough and position error is small. See [`src/trajectory_monitor.cpp#L81`](../src/trajectory_monitor.cpp#L81).
+- `ON_TRACK` if both position and orientation errors are within thresholds. See [`src/trajectory_monitor.cpp#L88`](../src/trajectory_monitor.cpp#L88).
+- `DIVERGED` if position error stays above `diverged_pos` for long enough. See [`src/trajectory_monitor.cpp#L95`](../src/trajectory_monitor.cpp#L95).
+- Otherwise `LAGGING`. See [`src/trajectory_monitor.cpp#L106`](../src/trajectory_monitor.cpp#L106).
 
 Thresholds are defined by `MonitorParams`. See [`include/mpc_cartesian_planner/trajectory_monitor.h#L28`](../include/mpc_cartesian_planner/trajectory_monitor.h#L28).
 
-Implementation detail: divergence uses a fixed \(0.05\) s increment per update (not the actual timer period). See [`src/trajectory_monitor.cpp#L85`](../src/trajectory_monitor.cpp#L85).
+Implementation detail: divergence integrates elapsed time between monitor updates (derived from observation timestamps, falling back to `1 / monitorRate`). See [`src/trajectory_monitor.cpp#L95`](../src/trajectory_monitor.cpp#L95).
 
 ## 7) Parameters and tuning
 
@@ -246,16 +250,20 @@ The demo config is in [`config/tt_params.yaml#L1`](../config/tt_params.yaml#L1).
 
 TT publisher parameters:
 - `publishRate`: publishing frequency (Hz). See [`config/tt_params.yaml#L3`](../config/tt_params.yaml#L3).
-- `horizon`: horizon length \(T\) (seconds). See [`config/tt_params.yaml#L4`](../config/tt_params.yaml#L4).
-- `dt`: discretization step \(\Delta t\) (seconds). See [`config/tt_params.yaml#L5`](../config/tt_params.yaml#L5).
-- `amplitude`: figure-eight amplitude \(A\) (meters). See [`config/tt_params.yaml#L6`](../config/tt_params.yaml#L6).
-- `frequency`: sinusoid frequency \(f\) (Hz). See [`config/tt_params.yaml#L7`](../config/tt_params.yaml#L7).
-- `axisX/Y/Z`: normal vector for the motion plane. See [`config/tt_params.yaml#L9`](../config/tt_params.yaml#L9).
+- `publishOnce`: if `true`, publish the target trajectory once and stop publishing (useful for finite tracks + `FINISHED`). See [`config/tt_params.yaml#L4`](../config/tt_params.yaml#L4).
+- `commandFrameId`: child frame id for the published command TF. See [`config/tt_params.yaml#L5`](../config/tt_params.yaml#L5).
+- `horizon`: horizon length \(T\) (seconds). In `publishOnce=true`, this is the total trajectory duration. See [`config/tt_params.yaml#L6`](../config/tt_params.yaml#L6).
+- `dt`: discretization step \(\Delta t\) (seconds). See [`config/tt_params.yaml#L7`](../config/tt_params.yaml#L7).
+- `amplitude`: figure-eight amplitude \(A\) (meters). See [`config/tt_params.yaml#L8`](../config/tt_params.yaml#L8).
+- `frequency`: sinusoid frequency \(f\) (Hz). See [`config/tt_params.yaml#L9`](../config/tt_params.yaml#L9).
+- `axisX/Y/Z`: normal vector for the motion plane. See [`config/tt_params.yaml#L11`](../config/tt_params.yaml#L11).
 
 Monitor parameters:
-- `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L15`](../config/tt_params.yaml#L15).
-- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L16`](../config/tt_params.yaml#L16).
-- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L17`](../config/tt_params.yaml#L17).
-- `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L19`](../config/tt_params.yaml#L19).
-- `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L22`](../config/tt_params.yaml#L22).
-- `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L25`](../config/tt_params.yaml#L25).
+- `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L17`](../config/tt_params.yaml#L17).
+- `publishTF`: if `true`, publish a TF for the closest reference waypoint. See [`config/tt_params.yaml#L18`](../config/tt_params.yaml#L18).
+- `closestFrameId`: child frame id for the closest-waypoint TF. See [`config/tt_params.yaml#L19`](../config/tt_params.yaml#L19).
+- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L20`](../config/tt_params.yaml#L20).
+- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L21`](../config/tt_params.yaml#L21).
+- `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L23`](../config/tt_params.yaml#L23).
+- `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L26`](../config/tt_params.yaml#L26).
+- `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L29`](../config/tt_params.yaml#L29).

@@ -12,6 +12,7 @@ void TrajectoryMonitor::setTrajectory(PlannedCartesianTrajectory traj) {
   traj_ = std::move(traj);
   last_best_ = 0;
   diverged_accum_ = 0.0;
+  have_last_update_time_ = false;
 }
 
 double TrajectoryMonitor::orientationErrorDeg(const Eigen::Quaterniond& q_des,
@@ -28,8 +29,19 @@ TrackingMetrics TrajectoryMonitor::update(double t_now,
   TrackingMetrics m;
   if (traj_.empty()) {
     m.status = TrackingStatus::NOT_READY;
+    have_last_update_time_ = false;
     return m;
   }
+
+  double dt_update = std::max(1e-9, params_.update_dt);
+  if (have_last_update_time_) {
+    const double dt_meas = t_now - last_update_time_;
+    if (std::isfinite(dt_meas) && dt_meas > 0.0) {
+      dt_update = dt_meas;
+    }
+  }
+  last_update_time_ = t_now;
+  have_last_update_time_ = true;
 
   const int N = static_cast<int>(traj_.size());
   const int k0 = static_cast<int>(last_best_);
@@ -82,7 +94,7 @@ TrackingMetrics TrajectoryMonitor::update(double t_now,
 
   // Divergence: error large for some duration (simple accumulator)
   if (m.pos_err >= params_.diverged_pos) {
-    diverged_accum_ += 0.05;  // assume ~50 ms update; tune divergedHoldSec accordingly
+    diverged_accum_ += dt_update;
     if (diverged_accum_ >= params_.diverged_hold_sec) {
       m.status = TrackingStatus::DIVERGED;
       return m;

@@ -65,7 +65,7 @@
 
 #include "mpc_cartesian_planner/cartesian_trajectory_planner.h"
 #include "mpc_cartesian_planner/trajectory_publisher.h"
-#include "robot_math_utils/robot_math_utils_v1_17.hpp"
+#include "robot_math_utils/robot_math_utils_v1_18.hpp"
 
 using ocs2::SystemObservation;
 
@@ -236,6 +236,11 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<std::string>("linearMoveTimeScaling", std::string("min_jerk"));
     this->declare_parameter<std::vector<double>>("poseMoveTarget", std::vector<double>{});
     this->declare_parameter<std::string>("poseMoveTimeScaling", std::string("min_jerk"));
+    this->declare_parameter<std::vector<double>>("screwMoveUhat", std::vector<double>({0.0, 1.0, 0.0}));
+    this->declare_parameter<std::vector<double>>("screwMoveR", std::vector<double>({0.1, 0.0, 0.0}));
+    this->declare_parameter<double>("screwMoveTheta", 1.5707963267948966);  // pi/2
+    this->declare_parameter<bool>("screwMoveInToolFrame", true);
+    this->declare_parameter<std::string>("screwMoveTimeScaling", std::string("min_jerk"));
     this->declare_parameter<bool>("interveneHoldOnDivergedOrFinished", false);
     this->declare_parameter<bool>("switchMpcControllerOnIntervention", false);
     this->declare_parameter<std::string>("controllerManagerSwitchService", std::string("/controller_manager/switch_controller"));
@@ -326,6 +331,28 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
       }
     }
     poseMoveTimeScaling_ = parseTimeScaling(this->get_parameter("poseMoveTimeScaling").as_string());
+
+    {
+      const auto uhat = this->get_parameter("screwMoveUhat").as_double_array();
+      if (uhat.size() == 3) {
+        screwMoveUhat_ = Eigen::Vector3d(uhat[0], uhat[1], uhat[2]);
+      } else {
+        RCLCPP_WARN(this->get_logger(), "screwMoveUhat must be a double[3]. Got size=%zu. Using [0,1,0].", uhat.size());
+        screwMoveUhat_ = Eigen::Vector3d(0.0, 1.0, 0.0);
+      }
+    }
+    {
+      const auto r = this->get_parameter("screwMoveR").as_double_array();
+      if (r.size() == 3) {
+        screwMoveR_ = Eigen::Vector3d(r[0], r[1], r[2]);
+      } else {
+        RCLCPP_WARN(this->get_logger(), "screwMoveR must be a double[3]. Got size=%zu. Using [0.1,0,0].", r.size());
+        screwMoveR_ = Eigen::Vector3d(0.1, 0.0, 0.0);
+      }
+    }
+    screwMoveTheta_ = this->get_parameter("screwMoveTheta").as_double();
+    screwMoveInToolFrame_ = this->get_parameter("screwMoveInToolFrame").as_bool();
+    screwMoveTimeScaling_ = parseTimeScaling(this->get_parameter("screwMoveTimeScaling").as_string());
 
     if (!taskFile_.empty() && !urdfFile_.empty() && !libFolder_.empty()) {
       try {
@@ -659,6 +686,16 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
         p.offset_in_body_frame = linearMoveOffsetInToolFrame_;
         p.time_scaling = linearMoveTimeScaling_;
         planner_ = std::make_unique<LinearMovePlanner>(centerP_, q0_, p);
+      } else if (type == "screw_move" || type == "screw-move" || type == "screw" || type == "screw_motion" || type == "screwmotion") {
+        ScrewMoveParams p;
+        p.horizon_T = horizon_;
+        p.dt = dt_;
+        p.u_hat = screwMoveUhat_;
+        p.r = screwMoveR_;
+        p.theta = screwMoveTheta_;
+        p.expressed_in_body_frame = screwMoveInToolFrame_;
+        p.time_scaling = screwMoveTimeScaling_;
+        planner_ = std::make_unique<ScrewMovePlanner>(centerP_, q0_, p);
       } else if (type == "target_pose" || type == "pose_target" || type == "goal_pose" || type == "pose") {
         TargetPoseParams p;
         p.horizon_T = horizon_;
@@ -801,6 +838,11 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   Eigen::Vector3d poseMoveTargetP_{Eigen::Vector3d::Zero()};
   Eigen::Quaterniond poseMoveTargetQ_{Eigen::Quaterniond::Identity()};
   TimeScalingType poseMoveTimeScaling_{TimeScalingType::MinJerk};
+  Eigen::Vector3d screwMoveUhat_{0.0, 1.0, 0.0};
+  Eigen::Vector3d screwMoveR_{0.1, 0.0, 0.0};
+  double screwMoveTheta_{1.5707963267948966};
+  bool screwMoveInToolFrame_{true};
+  TimeScalingType screwMoveTimeScaling_{TimeScalingType::MinJerk};
   bool interveneHoldOnDivergedOrFinished_{false};
   bool switchMpcControllerOnIntervention_{false};
   std::string controllerManagerSwitchService_{"/controller_manager/switch_controller"};

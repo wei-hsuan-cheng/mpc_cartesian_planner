@@ -3,10 +3,10 @@
 
 // Author: Wei-Hsuan Cheng, johnathancheng0125@gmail.com, https://github.com/wei-hsuan-cheng
 // GitHub repo: https://github.com/wei-hsuan-cheng/robot_math_utils
-// v1_17, last edit: 251013
+// v1_18, last edit: 260207
 //
 // Version history:
-//  - Migrate the kinematics-related functions and structures from robot_math_utils_v1_16.hpp to robot_kinematics_utils_v1_0.hpp.
+//  - v1_18: Add screw-motion helpers `ScrewMotion6DPath/Traj(pos_quat_b_e, u_hat, r, theta, ...)`.
 
 
 #include <Eigen/Dense>
@@ -1057,12 +1057,92 @@ public:
         return waypoints;
     }
 
+    // 6D screw motion: generate waypoints from screw parameters
+    // u_hat: screw axis direction (will be normalized)
+    // r: vector from screw axis to the TCP/origin (||r|| is the radius)
+    // theta: total rotation about the axis [rad]
+    static std::vector<PosQuat> ScrewMotion6DPath(const PosQuat& pos_quat_b_e, const Vector3d& u_hat, const Vector3d& r, double theta, int N) {
+        if (N <= 0) {
+            throw std::invalid_argument("[RMUtils::ScrewMotion6DPath() Error] N must be positive.");
+        }
+        if (NearZero(u_hat.norm())) {
+            throw std::invalid_argument("[RMUtils::ScrewMotion6DPath() Error] u_hat must have non-zero norm.");
+        }
+
+        std::vector<PosQuat> waypoints; // Output waypoints
+        waypoints.reserve(static_cast<std::size_t>(N));
+
+        Vector3d u = u_hat.normalized();
+        const Vector3d v = u.cross(r);
+
+        Vector6d se3_e_e_cmd;
+        se3_e_e_cmd.head<3>() = v * theta;   // v * theta
+        se3_e_e_cmd.tail<3>() = u * theta;   // u_hat * theta
+
+        // Generate waypoints
+        for (int i = 0; i < N; ++i)
+        {
+            double alpha = static_cast<double>(i + 1) / N;
+            // Intermediate se3
+            Vector6d se3_e_e_cmd_i = alpha * se3_e_e_cmd;
+            // Compute se3 back to pos_quat
+            PosQuat pos_quat_e_e_cmd_i = TMat2PosQuat( MatrixExp6( R6Vec2se3Mat(se3_e_e_cmd_i) ) );
+            // Transform to base frame
+            PosQuat pos_quat_b_e_d_i = TransformPosQuats({pos_quat_b_e, pos_quat_e_e_cmd_i});
+            // Append to waypoints
+            waypoints.push_back(pos_quat_b_e_d_i);
+        }
+        return waypoints;
+    }
+
     // Screw motion 6D trajectory generation (waypoints and timestamps)
     static std::pair<std::vector<PosQuat>, std::vector<double>> ScrewMotion6DTraj(const PosQuat& pos_quat_b_e, const PosQuat& pos_quat_e_e_cmd, int N, double T) {
         std::vector<PosQuat> waypoints; // Output waypoints
         std::vector<double> timestamps; // Output timestamps
         // Convert pos_quat_e_e_cmd to se3_e_e_cmd
         Vector6d se3_e_e_cmd = se3Mat2R6Vec( MatrixLog6( PosQuat2TMat(pos_quat_e_e_cmd) ) );
+        // Generate waypoints
+        for (int i = 0; i < N; ++i)
+        {
+            double alpha = static_cast<double>(i + 1) / N;
+            // Intermediate se3
+            Vector6d se3_e_e_cmd_i = alpha * se3_e_e_cmd;
+            // Compute se3 back to pos_quat
+            PosQuat pos_quat_e_e_cmd_i = TMat2PosQuat( MatrixExp6( R6Vec2se3Mat(se3_e_e_cmd_i) ) );
+            // Transform to base frame
+            PosQuat pos_quat_b_e_d_i = TransformPosQuats({pos_quat_b_e, pos_quat_e_e_cmd_i});
+            // Append to waypoints
+            waypoints.push_back(pos_quat_b_e_d_i);
+            // Append timestamps
+            timestamps.push_back(alpha * T);
+        }
+        return std::make_pair(waypoints, timestamps);
+    }
+
+    // 6D screw motion trajectory generation (waypoints and timestamps) from screw parameters
+    static std::pair<std::vector<PosQuat>, std::vector<double>> ScrewMotion6DTraj(const PosQuat& pos_quat_b_e, const Vector3d& u_hat, const Vector3d& r, double theta, int N, double T) {
+        if (N <= 0) {
+            throw std::invalid_argument("[RMUtils::ScrewMotion6DTraj() Error] N must be positive.");
+        }
+        if (NearZero(u_hat.norm())) {
+            throw std::invalid_argument("[RMUtils::ScrewMotion6DTraj() Error] u_hat must have non-zero norm.");
+        }
+        if (T <= 0) {
+            throw std::invalid_argument("[RMUtils::ScrewMotion6DTraj() Error] T must be positive.");
+        }
+
+        std::vector<PosQuat> waypoints; // Output waypoints
+        std::vector<double> timestamps; // Output timestamps
+        waypoints.reserve(static_cast<std::size_t>(N));
+        timestamps.reserve(static_cast<std::size_t>(N));
+
+        Vector3d u = u_hat.normalized();
+        const Vector3d v = u.cross(r);
+
+        Vector6d se3_e_e_cmd;
+        se3_e_e_cmd.head<3>() = v * theta;   // v * theta
+        se3_e_e_cmd.tail<3>() = u * theta;   // u_hat * theta
+
         // Generate waypoints
         for (int i = 0; i < N; ++i)
         {

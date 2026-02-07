@@ -5,7 +5,7 @@ trajectory_tt_publisher:
     commandFrameId: command
 
     # Select the type of trajectory to publish. The parameters below will be used accordingly.
-    trajectoryType: target_pose # linear_move, target_pose, figure_eight
+    trajectoryType: screw_move # linear_move, target_pose, screw_move, figure_eight
     horizon: 4.0
     dt: 0.05
     amplitude: 0.20
@@ -29,11 +29,21 @@ trajectory_tt_publisher:
     # poseMoveTarget: [] # empty -> stay at initial pose (no motion)
     poseMoveTimeScaling: min_jerk # linear, min_jerk
 
+    # (screw_move) relative 6D screw motion (body-fixed): T(t) = T0 * exp([S] * theta(t))
+    # - u_hat: axis direction in the initial EE/tool frame (will be normalized)
+    # - r: vector from screw axis to TCP/origin in the initial EE/tool frame (||r|| is the radius)
+    # - theta: total rotation about the axis [rad]
+    screwMoveUhat: [0.0, 1.0, 0.0]
+    screwMoveR: [-0.25, 0.0, 0.0]
+    screwMoveTheta: 1.57079632679 # +pi/2
+    screwMoveInToolFrame: true
+    screwMoveTimeScaling: min_jerk # linear, min_jerk
+
     # Intervention: on DIVERGED or FINISHED, publish a HOLD target at the current EE pose and stop TT publishing.
-    interveneHoldOnDivergedOrFinished: true
+    interveneHoldOnDivergedOrFinished: false
 
     # Optional: also switch the ros2_control controller on intervention/pause/resume via controller_manager.
-    switchMpcControllerOnIntervention: true
+    switchMpcControllerOnIntervention: false
     controllerManagerSwitchService: "/controller_manager/switch_controller"
     mpcControllerName: "mpc_controller"
 

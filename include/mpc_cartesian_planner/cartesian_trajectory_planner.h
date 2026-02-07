@@ -114,4 +114,32 @@ class TargetPosePlanner final : public CartesianTrajectoryPlanner {
   bool have_start_time_{false};
 };
 
+struct ScrewMoveParams {
+  double horizon_T = 2.0;
+  double dt = 0.05;
+  Eigen::Vector3d u_hat = Eigen::Vector3d::UnitY();  // screw axis direction
+  Eigen::Vector3d r = Eigen::Vector3d::Zero();       // axis->TCP vector (||r|| is the radius)
+  double theta = 0.0;                                // total rotation about axis (radians)
+  bool expressed_in_body_frame = true;               // true: (u_hat, r) in initial EE/tool frame; false: in world frame
+  TimeScalingType time_scaling = TimeScalingType::MinJerk;
+};
+
+class ScrewMovePlanner final : public CartesianTrajectoryPlanner {
+ public:
+  ScrewMovePlanner(const Eigen::Vector3d& start_p,
+                   const Eigen::Quaterniond& start_q,
+                   ScrewMoveParams params);
+
+  PlannedCartesianTrajectory plan(const ocs2::SystemObservation& obs) override;
+  void setStartTime(double t_start) override { start_time_ = t_start; have_start_time_ = true; }
+
+ private:
+  Eigen::Vector3d p0_;
+  Eigen::Quaterniond q0_;
+  Eigen::Matrix<double, 6, 1> se3_cmd_{Eigen::Matrix<double, 6, 1>::Zero()};  // [v*theta; w*theta]
+  ScrewMoveParams params_;
+  double start_time_{0.0};
+  bool have_start_time_{false};
+};
+
 }  // namespace mpc_cartesian_planner

@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include "robot_math_utils/robot_math_utils_v1_17.hpp"
+#include "robot_math_utils/robot_math_utils_v1_18.hpp"
 
 namespace mpc_cartesian_planner {
 
@@ -185,6 +185,57 @@ PlannedCartesianTrajectory TargetPosePlanner::plan(const ocs2::SystemObservation
     out.time.push_back(tk);
     out.position.push_back(p);
     out.quat.push_back(q);
+  }
+  return out;
+}
+
+ScrewMovePlanner::ScrewMovePlanner(const Eigen::Vector3d& start_p,
+                                   const Eigen::Quaterniond& start_q,
+                                   ScrewMoveParams params)
+    : p0_(start_p), q0_(start_q.normalized()), params_(std::move(params)) {
+  if (params_.u_hat.norm() < 1e-12) {
+    params_.u_hat = Eigen::Vector3d::UnitZ();
+  } else {
+    params_.u_hat.normalize();
+  }
+
+  const Eigen::Vector3d v = params_.u_hat.cross(params_.r);
+  se3_cmd_.head<3>() = v * params_.theta;
+  se3_cmd_.tail<3>() = params_.u_hat * params_.theta;
+}
+
+PlannedCartesianTrajectory ScrewMovePlanner::plan(const ocs2::SystemObservation& obs) {
+  const double t0 = obs.time;
+  if (!have_start_time_) {
+    start_time_ = t0;
+    have_start_time_ = true;
+  }
+
+  const double dt = std::max(1e-9, params_.dt);
+  const double T = std::max(1e-9, params_.horizon_T);
+  const int N = std::max(1, static_cast<int>(std::ceil(T / dt)));
+
+  PlannedCartesianTrajectory out;
+  out.time.reserve(N + 1);
+  out.position.reserve(N + 1);
+  out.quat.reserve(N + 1);
+
+  const PosQuat pos_quat_b_e0(p0_, q0_);
+  const Eigen::Matrix4d T_b_e0 = RMUtils::PosQuat2TMat(pos_quat_b_e0);
+
+  for (int k = 0; k <= N; ++k) {
+    const double tk = t0 + k * dt;
+    const double tau01 = (tk - start_time_) / T;
+    const double s = evalTimeScaling(params_.time_scaling, tau01);
+
+    const Eigen::Matrix<double, 6, 1> se3_cmd_i = s * se3_cmd_;
+    const Eigen::Matrix4d T_delta = RMUtils::MatrixExp6(RMUtils::R6Vec2se3Mat(se3_cmd_i));
+    const Eigen::Matrix4d T_b_ed = params_.expressed_in_body_frame ? (T_b_e0 * T_delta) : (T_delta * T_b_e0);
+    const PosQuat pos_quat_b_ed = RMUtils::TMat2PosQuat(T_b_ed);
+
+    out.time.push_back(tk);
+    out.position.push_back(pos_quat_b_ed.pos);
+    out.quat.push_back(pos_quat_b_ed.quat.normalized());
   }
   return out;
 }

@@ -4,25 +4,29 @@ trajectory_tt_publisher:
     publishOnce: true
     commandFrameId: command
 
+    #################### Trajectory parameters ####################
     # Select the type of trajectory to publish. The parameters below will be used accordingly.
     trajectoryType: screw_move # target_pose, linear_move, screw_move, figure_eight
     duration: 4.0
     dt: 0.05
     timeScaling: min_jerk # linear, min_jerk (used by: target_pose, linear_move, screw_move)
 
-    # (poseMoveTarget) move along a straight line in the global frame from the initial EE pose to a specified target pose.
+    #################### poseMoveTarget ####################
+    # Move along a straight line in the global frame from the initial EE pose to a specified target pose.
     # [x, y, z] or [x, y, z, thz, thy, thx] or [x, y, z, qw, qx, qy, qz] [m, rad, or unitless]
     poseMoveTarget: [0.45, 0.2, 0.7, 0.707, 0.0, 0.0, -0.707] # [x, y, z, qw, qx, qy, qz]
     # poseMoveTarget: [0.6, 0.4, 0.9] # [x, y, z]
     # poseMoveTarget: [0.45, 0.2, 0.7, 0.0, 0.0, 0.0] # [x, y, z, thz, thy, thx]
     # poseMoveTarget: [] # empty -> stay at initial pose (no motion)
 
-    # (linearMoveOffset) move along a straight line in the global frame from the initial EE pose to an offset pose.
+    #################### linearMoveOffset ####################
+    # Move along a straight line in the global frame from the initial EE pose to an offset pose.
     # [x, y, z, thz, thy, thx] [m, rad]
     linearMoveOffset: [0.0, 0.0, 0.1, 0.0, 0.7854, 0.0]
     linearMoveOffsetInToolFrame: true
 
-    # (screw_move) relative 6D screw motion (body-screw): T(t) = T0 * exp([S] * theta(t))
+    #################### screw_move ####################
+    # Relative 6D screw motion (body-screw): T(t) = T0 * exp([S] * theta(t))
     # u_hat: axis of rotation represented in EE frame (will be normalized)
     # r: axis->EE vector represented in EE frame (||r|| is the radius) [m]
     # theta: screw angle about the axis [rad]
@@ -34,13 +38,15 @@ trajectory_tt_publisher:
     screwMoveTheta: 1.57079632679 # +pi/2
     screwMoveInToolFrame: true
 
-    # (figure_eight) periodic figure-eight trajectory in a plane.
+    #################### figure_eight ####################
+    # Figure-eight trajectory in a plane.
     amplitude: 0.20
     frequency: 0.05
     axisX: 1.0
     axisY: 0.0
     axisZ: 1.0
 
+    #################### Intervention and mode schedule/switching settings ####################
     # Intervention: on DIVERGED or FINISHED, publish a HOLD target at the current EE pose and stop TT publishing.
     interveneHoldOnDivergedOrFinished: true
 
@@ -65,7 +71,7 @@ trajectory_progress_monitor:
     onTrackOriDeg: 5.0
 
     divergedPos: 0.03
-    divergedHoldSec: 0.5
+    divergedHoldSec: 1.0
 
     finishProgress: 0.98
     finishPos: 0.005

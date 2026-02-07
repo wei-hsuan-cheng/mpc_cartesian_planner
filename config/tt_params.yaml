@@ -35,12 +35,14 @@ trajectory_tt_publisher:
     # - theta: total rotation about the axis [rad]
     screwMoveUhat: [0.0, 1.0, 0.0]
     screwMoveR: [-0.25, 0.0, 0.0]
+    # screwMoveUhat: [0.0, 0.0, 1.0]
+    # screwMoveR: [0.05, 0.0, 0.0]
     screwMoveTheta: 1.57079632679 # +pi/2
     screwMoveInToolFrame: true
     screwMoveTimeScaling: min_jerk # linear, min_jerk
 
     # Intervention: on DIVERGED or FINISHED, publish a HOLD target at the current EE pose and stop TT publishing.
-    interveneHoldOnDivergedOrFinished: false
+    interveneHoldOnDivergedOrFinished: true
 
     # Optional: also switch the ros2_control controller on intervention/pause/resume via controller_manager.
     switchMpcControllerOnIntervention: false

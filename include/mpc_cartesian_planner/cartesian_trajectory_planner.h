@@ -118,7 +118,7 @@ struct ScrewMoveParams {
   double horizon_T = 2.0;
   double dt = 0.05;
   Eigen::Vector3d u_hat = Eigen::Vector3d::UnitY();  // screw axis direction
-  Eigen::Vector3d r = Eigen::Vector3d::Zero();       // axis->TCP vector (||r|| is the radius)
+  Eigen::Vector3d r = Eigen::Vector3d::Zero();       // axis->EE vector (||r|| is the radius)
   double theta = 0.0;                                // total rotation about axis (radians)
   bool expressed_in_body_frame = true;               // true: (u_hat, r) in initial EE/tool frame; false: in world frame
   TimeScalingType time_scaling = TimeScalingType::MinJerk;

@@ -217,8 +217,9 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<std::string>("robotName", std::string("mobile_manipulator"));
 
     this->declare_parameter<double>("publishRate", 20.0);
-    this->declare_parameter<double>("horizon", 2.0);
+    this->declare_parameter<double>("duration", 2.0);
     this->declare_parameter<double>("dt", 0.05);
+    this->declare_parameter<std::string>("timeScaling", std::string("min_jerk"));
     this->declare_parameter<double>("amplitude", 0.2);
     this->declare_parameter<double>("frequency", 0.1);
     this->declare_parameter<double>("axisX", 0.0);
@@ -233,14 +234,11 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<std::string>("trajectoryType", std::string("figure_eight"));
     this->declare_parameter<std::vector<double>>("linearMoveOffset", std::vector<double>({0.0, 0.0, 0.0, 0.0, 0.0, 0.0}));
     this->declare_parameter<bool>("linearMoveOffsetInToolFrame", false);
-    this->declare_parameter<std::string>("linearMoveTimeScaling", std::string("min_jerk"));
     this->declare_parameter<std::vector<double>>("poseMoveTarget", std::vector<double>{});
-    this->declare_parameter<std::string>("poseMoveTimeScaling", std::string("min_jerk"));
     this->declare_parameter<std::vector<double>>("screwMoveUhat", std::vector<double>({0.0, 1.0, 0.0}));
     this->declare_parameter<std::vector<double>>("screwMoveR", std::vector<double>({0.1, 0.0, 0.0}));
     this->declare_parameter<double>("screwMoveTheta", 1.5707963267948966);  // pi/2
     this->declare_parameter<bool>("screwMoveInToolFrame", true);
-    this->declare_parameter<std::string>("screwMoveTimeScaling", std::string("min_jerk"));
     this->declare_parameter<bool>("interveneHoldOnDivergedOrFinished", false);
     this->declare_parameter<bool>("switchMpcControllerOnIntervention", false);
     this->declare_parameter<std::string>("controllerManagerSwitchService", std::string("/controller_manager/switch_controller"));
@@ -254,8 +252,9 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     robotName_ = this->get_parameter("robotName").as_string();
 
     publishRate_ = this->get_parameter("publishRate").as_double();
-    horizon_ = this->get_parameter("horizon").as_double();
+    duration_ = this->get_parameter("duration").as_double();
     dt_ = this->get_parameter("dt").as_double();
+    timeScaling_ = parseTimeScaling(this->get_parameter("timeScaling").as_string());
     amplitude_ = this->get_parameter("amplitude").as_double();
     freqHz_ = this->get_parameter("frequency").as_double();
     axis_ = readAxis(*this);
@@ -284,7 +283,6 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
       }
     }
     linearMoveOffsetInToolFrame_ = this->get_parameter("linearMoveOffsetInToolFrame").as_bool();
-    linearMoveTimeScaling_ = parseTimeScaling(this->get_parameter("linearMoveTimeScaling").as_string());
     interveneHoldOnDivergedOrFinished_ = this->get_parameter("interveneHoldOnDivergedOrFinished").as_bool();
     switchMpcControllerOnIntervention_ = this->get_parameter("switchMpcControllerOnIntervention").as_bool();
     controllerManagerSwitchService_ = this->get_parameter("controllerManagerSwitchService").as_string();
@@ -330,7 +328,6 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
         }
       }
     }
-    poseMoveTimeScaling_ = parseTimeScaling(this->get_parameter("poseMoveTimeScaling").as_string());
 
     {
       const auto uhat = this->get_parameter("screwMoveUhat").as_double_array();
@@ -352,7 +349,6 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     }
     screwMoveTheta_ = this->get_parameter("screwMoveTheta").as_double();
     screwMoveInToolFrame_ = this->get_parameter("screwMoveInToolFrame").as_bool();
-    screwMoveTimeScaling_ = parseTimeScaling(this->get_parameter("screwMoveTimeScaling").as_string());
 
     if (!taskFile_.empty() && !urdfFile_.empty() && !libFolder_.empty()) {
       try {
@@ -513,7 +509,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
                 trajPub_->topic().c_str(), publishRate_);
     if (publishOnce_) {
       RCLCPP_INFO(this->get_logger(),
-                  "publishOnce=true: will publish the target trajectory once (use 'horizon' as total duration) and then stop publishing.");
+                  "publishOnce=true: will publish the target trajectory once (use 'duration' as total duration) and then stop publishing.");
     }
   }
 
@@ -538,7 +534,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
 
     PlannedCartesianTrajectory hold;
     const double t0 = obs.time;
-    const double T = std::max(1e-3, horizon_);
+    const double T = std::max(1e-3, duration_);
     hold.time = {t0, t0 + T};
     hold.position = {p_hold, p_hold};
     hold.quat = {q_hold, q_hold};
@@ -671,7 +667,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
       const std::string type = toLowerCopy(trajectoryType_);
       if (type == "figure_eight" || type == "figure8" || type == "figure-eight") {
         FigureEightParams p;
-        p.horizon_T = horizon_;
+        p.horizon_T = duration_;
         p.dt = dt_;
         p.amplitude = amplitude_;
         p.frequency_hz = freqHz_;
@@ -679,28 +675,28 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
         planner_ = std::make_unique<FigureEightPlanner>(centerP_, q0_, p);
       } else if (type == "linear_move" || type == "linearmove" || type == "linear-move" || type == "linear") {
         LinearMoveParams p;
-        p.horizon_T = horizon_;
+        p.horizon_T = duration_;
         p.dt = dt_;
         p.offset = linearMoveOffset_;
         p.euler_zyx = linearMoveEulerZyx_;
         p.offset_in_body_frame = linearMoveOffsetInToolFrame_;
-        p.time_scaling = linearMoveTimeScaling_;
+        p.time_scaling = timeScaling_;
         planner_ = std::make_unique<LinearMovePlanner>(centerP_, q0_, p);
       } else if (type == "screw_move" || type == "screw-move" || type == "screw" || type == "screw_motion" || type == "screwmotion") {
         ScrewMoveParams p;
-        p.horizon_T = horizon_;
+        p.horizon_T = duration_;
         p.dt = dt_;
         p.u_hat = screwMoveUhat_;
         p.r = screwMoveR_;
         p.theta = screwMoveTheta_;
         p.expressed_in_body_frame = screwMoveInToolFrame_;
-        p.time_scaling = screwMoveTimeScaling_;
+        p.time_scaling = timeScaling_;
         planner_ = std::make_unique<ScrewMovePlanner>(centerP_, q0_, p);
       } else if (type == "target_pose" || type == "pose_target" || type == "goal_pose" || type == "pose") {
         TargetPoseParams p;
-        p.horizon_T = horizon_;
+        p.horizon_T = duration_;
         p.dt = dt_;
-        p.time_scaling = poseMoveTimeScaling_;
+        p.time_scaling = timeScaling_;
         p.target_p = poseMoveHasTarget_ ? poseMoveTargetP_ : centerP_;
         if (poseMoveHasOrientation_) {
           p.target_q = poseMoveTargetQ_;
@@ -713,7 +709,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
       } else {
         RCLCPP_WARN(this->get_logger(), "Unknown trajectoryType='%s'. Falling back to figure_eight.", trajectoryType_.c_str());
         FigureEightParams p;
-        p.horizon_T = horizon_;
+        p.horizon_T = duration_;
         p.dt = dt_;
         p.amplitude = amplitude_;
         p.frequency_hz = freqHz_;
@@ -817,7 +813,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   std::string globalFrame_{"world"};
 
   double publishRate_{20.0};
-  double horizon_{2.0};
+  double duration_{2.0};
   double dt_{0.05};
   double amplitude_{0.2};
   double freqHz_{0.1};
@@ -832,17 +828,15 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   Eigen::Vector3d linearMoveOffset_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d linearMoveEulerZyx_{Eigen::Vector3d::Zero()};
   bool linearMoveOffsetInToolFrame_{false};
-  TimeScalingType linearMoveTimeScaling_{TimeScalingType::MinJerk};
+  TimeScalingType timeScaling_{TimeScalingType::MinJerk};
   bool poseMoveHasTarget_{false};
   bool poseMoveHasOrientation_{false};
   Eigen::Vector3d poseMoveTargetP_{Eigen::Vector3d::Zero()};
   Eigen::Quaterniond poseMoveTargetQ_{Eigen::Quaterniond::Identity()};
-  TimeScalingType poseMoveTimeScaling_{TimeScalingType::MinJerk};
   Eigen::Vector3d screwMoveUhat_{0.0, 1.0, 0.0};
   Eigen::Vector3d screwMoveR_{0.1, 0.0, 0.0};
   double screwMoveTheta_{1.5707963267948966};
   bool screwMoveInToolFrame_{true};
-  TimeScalingType screwMoveTimeScaling_{TimeScalingType::MinJerk};
   bool interveneHoldOnDivergedOrFinished_{false};
   bool switchMpcControllerOnIntervention_{false};
   std::string controllerManagerSwitchService_{"/controller_manager/switch_controller"};

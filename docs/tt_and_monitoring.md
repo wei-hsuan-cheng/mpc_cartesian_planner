@@ -55,7 +55,7 @@ Each tick:
 
 Note: in the default *receding-horizon* behavior (publishing a new horizon each tick), the monitor’s `progress` (normalized waypoint index) will typically stay near zero, since the closest waypoint is usually near the start of the latest horizon.
 
-If you want a **finite trajectory** with meaningful `progress` and a terminal `FINISHED` state, set `publishOnce: true` in the TT publisher params. In this mode the node publishes the target trajectory once (with `horizon` as the total duration) and then stops publishing.
+If you want a **finite trajectory** with meaningful `progress` and a terminal `FINISHED` state, set `publishOnce: true` in the TT publisher params. In this mode the node publishes the target trajectory once (with `duration` as the total duration) and then stops publishing.
 
 ## 3) Planner math (Trajectory Types)
 
@@ -72,7 +72,7 @@ The TT publisher selects the planner via the `trajectoryType` parameter (see `co
 ### 3.1 Time discretization
 
 Given:
-- horizon length \(T\) (`horizon_T`)
+- trajectory duration \(T\) (`duration` in `config/tt_params.yaml`, stored as `horizon_T`)
 - step \( \Delta t \) (`dt`)
 - current time \(t_0 = \texttt{obs.time}\)
 
@@ -83,7 +83,7 @@ N = \left\lceil \frac{T}{\Delta t} \right\rceil,\quad
 t_k = t_0 + k\Delta t,\quad k = 0,1,\dots,N
 $$
 
-See [`src/cartesian_trajectory_planner.cpp#L40`](../src/cartesian_trajectory_planner.cpp#L40) and [`src/cartesian_trajectory_planner.cpp#L50`](../src/cartesian_trajectory_planner.cpp#L50).
+See [`src/cartesian_trajectory_planner.cpp#L62`](../src/cartesian_trajectory_planner.cpp#L62) and [`src/cartesian_trajectory_planner.cpp#L73`](../src/cartesian_trajectory_planner.cpp#L73).
 
 ### 3.2 Plane basis from an axis
 
@@ -93,7 +93,7 @@ $$
 u = \frac{n \times r}{\|n \times r\|}, \quad v = n \times u
 $$
 
-where \(r\) is a “reference” axis chosen to not be parallel to \(n\). See [`src/cartesian_trajectory_planner.cpp#L17`](../src/cartesian_trajectory_planner.cpp#L17).
+where \(r\) is a “reference” axis chosen to not be parallel to \(n\). See [`src/cartesian_trajectory_planner.cpp#L39`](../src/cartesian_trajectory_planner.cpp#L39).
 
 ### 3.3 Figure-eight parametric curve
 
@@ -116,7 +116,7 @@ $$
 p(t_k) = p_c + u\,x(\tau) + v\,y(\tau)
 $$
 
-See [`src/cartesian_trajectory_planner.cpp#L46`](../src/cartesian_trajectory_planner.cpp#L46) and [`src/cartesian_trajectory_planner.cpp#L50`](../src/cartesian_trajectory_planner.cpp#L50).
+See [`src/cartesian_trajectory_planner.cpp#L75`](../src/cartesian_trajectory_planner.cpp#L75) and [`src/cartesian_trajectory_planner.cpp#L77`](../src/cartesian_trajectory_planner.cpp#L77).
 
 Orientation is constant (the initial FK orientation):
 
@@ -124,9 +124,9 @@ $$
 q(t_k) = q_0
 $$
 
-See [`src/cartesian_trajectory_planner.cpp#L59`](../src/cartesian_trajectory_planner.cpp#L59).
+See [`src/cartesian_trajectory_planner.cpp#L81`](../src/cartesian_trajectory_planner.cpp#L81).
 
-### 3.4 Linear move (min-jerk time scaling)
+### 3.4 Linear move (time scaling + so(3) interpolation)
 
 `LinearMovePlanner` generates a straight-line translation and a smooth orientation change from the initial end-effector pose.
 
@@ -140,10 +140,6 @@ where \((\theta_z,\theta_y,\theta_x)\) is **ZYX Euler** (applied as \(R_z(\theta
 
 For backward compatibility, `linearMoveOffset` may also be provided as `[dx, dy, dz]` (rotation assumed zero).
 
-$$
-p_1 = p_0 + \Delta p
-$$
-
 If `linearMoveOffsetInToolFrame: true`, the 6D offset is interpreted as a relative pose in the **initial EE/tool frame**.
 If `linearMoveOffsetInToolFrame: false`, translation is in the **global/base frame** and the rotation is applied about **global/base axes**.
 
@@ -153,19 +149,100 @@ $$
 \tau = \mathrm{clamp}\left(\frac{t - t_{\text{start}}}{T},\, 0,\, 1\right)
 $$
 
-and the position uses a time-scaling \(s(\tau)\):
+and uses a time-scaling \(s(\tau)\) (selected by `timeScaling`):
 
 $$
-p(t) = p_0 + s(\tau)\,(p_1 - p_0)
+s(\tau)=
+\begin{cases}
+\tau, & \texttt{linear} \\
+10\tau^3-15\tau^4+6\tau^5, & \texttt{min\_jerk}
+\end{cases}
 $$
 
-For `linearMoveTimeScaling: min_jerk`, the scaling is:
+Implementation note: the code first builds a **relative command pose** \(T_{e\rightarrow e_{\text{cmd}}}\) (from the offset parameters, either in tool frame directly or by converting a world-frame goal to a relative pose). It then interpolates in **pos + so(3)** coordinates:
 
 $$
-s(\tau)=10\tau^3-15\tau^4+6\tau^5
+p_{\text{rel}}(t)=s(\tau)\,\Delta p,\quad
+\phi(t)=s(\tau)\,\phi_{\text{cmd}},\quad
+R_{\text{rel}}(t)=\exp\!\left([\phi(t)]_\times\right)
 $$
 
-Orientation interpolates in so(3) using the exponential map (equivalently, scaling the rotation-vector log), so it stays on-manifold while transitioning from the start orientation to the commanded Euler offset.
+where \(\phi_{\text{cmd}}=\log(R_{e\rightarrow e_{\text{cmd}}})\) is the rotation-vector log, and then composes back to an **absolute** target:
+
+$$
+T_{b\rightarrow e}(t)=T_{b\rightarrow e_0}\,T_{\text{rel}}(t)
+$$
+
+See [`src/cartesian_trajectory_planner.cpp#L86`](../src/cartesian_trajectory_planner.cpp#L86) and [`src/cartesian_trajectory_planner.cpp#L112`](../src/cartesian_trajectory_planner.cpp#L112).
+
+### 3.5 Target pose (time scaling + SLERP)
+
+`TargetPosePlanner` moves from the initial pose \((p_0, q_0)\) to an **absolute** goal pose \((p_1, q_1)\) in the world frame.
+
+With the same \(\tau\) and \(s(\tau)\) as above:
+
+$$
+p(t)=p_0+s(\tau)\,(p_1-p_0)
+$$
+
+If `poseMoveTarget` provides an orientation, it uses quaternion SLERP:
+
+$$
+q(t)=\mathrm{slerp}(q_0,\;q_1;\;s(\tau))
+$$
+
+Otherwise it holds the initial orientation:
+
+$$
+q(t)=q_0
+$$
+
+See [`src/cartesian_trajectory_planner.cpp#L146`](../src/cartesian_trajectory_planner.cpp#L146) and [`src/cartesian_trajectory_planner.cpp#L157`](../src/cartesian_trajectory_planner.cpp#L157).
+
+### 3.6 Screw move (SE(3) screw motion)
+
+`ScrewMovePlanner` generates a relative **screw motion** starting from the current EE pose.
+
+Inputs:
+- axis direction \( \hat{u} \in \mathbb{R}^3 \) (`screwMoveUhat`, normalized)
+- axis-to-EE vector \( r \in \mathbb{R}^3 \) (`screwMoveR`, radius \( \|r\| \))
+- total rotation \( \theta \) (`screwMoveTheta`, radians)
+
+The screw axis (twist) is defined as:
+
+$$
+S = (v,\;\omega),\quad
+\omega=\hat{u},\quad
+v=\hat{u}\times r
+$$
+
+Using the se(3) “hat” operator:
+
+$$
+[S]=
+\begin{bmatrix}
+[\omega]_\times & v\\
+0 & 0
+\end{bmatrix}
+$$
+
+and a time-scaled rotation \(\theta(t)=s(\tau)\,\theta\), the relative transform is:
+
+$$
+T_{\Delta}(t)=\exp([S]\;\theta(t))
+$$
+
+Finally, it converts the relative motion to an **absolute** target pose:
+
+$$
+T_{b\rightarrow e}(t)=
+\begin{cases}
+T_{b\rightarrow e_0}\,T_{\Delta}(t), & \texttt{screwMoveInToolFrame}=\texttt{true} \\
+T_{\Delta}(t)\,T_{b\rightarrow e_0}, & \texttt{screwMoveInToolFrame}=\texttt{false}
+\end{cases}
+$$
+
+See [`src/cartesian_trajectory_planner.cpp#L192`](../src/cartesian_trajectory_planner.cpp#L192) and [`src/cartesian_trajectory_planner.cpp#L207`](../src/cartesian_trajectory_planner.cpp#L207).
 
 ## 4) Publishing the target trajectory (OCS2 message)
 
@@ -310,28 +387,26 @@ TT publisher parameters:
 - `publishOnce`: if `true`, publish the target trajectory once and stop publishing (useful for finite tracks + `FINISHED`). See [`config/tt_params.yaml#L4`](../config/tt_params.yaml#L4).
 - `commandFrameId`: child frame id for the published command TF. See [`config/tt_params.yaml#L5`](../config/tt_params.yaml#L5).
 - `trajectoryType`: trajectory generator (`figure_eight`, `linear_move`, `target_pose`, or `screw_move`). See [`config/tt_params.yaml#L8`](../config/tt_params.yaml#L8).
-- `horizon`: horizon length \(T\) (seconds). In `publishOnce=true`, this is the total trajectory duration. See [`config/tt_params.yaml#L9`](../config/tt_params.yaml#L9).
+- `duration`: trajectory duration \(T\) (seconds). In `publishOnce=true`, this is the total trajectory duration. See [`config/tt_params.yaml#L9`](../config/tt_params.yaml#L9).
 - `dt`: discretization step \(\Delta t\) (seconds). See [`config/tt_params.yaml#L10`](../config/tt_params.yaml#L10).
-- `amplitude`: figure-eight amplitude \(A\) (meters). See [`config/tt_params.yaml#L11`](../config/tt_params.yaml#L11).
-- `frequency`: sinusoid frequency \(f\) (Hz). See [`config/tt_params.yaml#L12`](../config/tt_params.yaml#L12).
-- `axisX/Y/Z`: normal vector for the motion plane. See [`config/tt_params.yaml#L14`](../config/tt_params.yaml#L14).
-- `linearMoveOffset`: 6D offset `[dx, dy, dz, thz, thy, thx]` (meters, radians) for `linear_move`. See [`config/tt_params.yaml#L20`](../config/tt_params.yaml#L20).
-- `linearMoveOffsetInToolFrame`: if `true`, interpret `linearMoveOffset` in the initial EE/tool frame. See [`config/tt_params.yaml#L21`](../config/tt_params.yaml#L21).
-- `linearMoveTimeScaling`: time scaling for `linear_move` (`min_jerk` or `linear`). See [`config/tt_params.yaml#L22`](../config/tt_params.yaml#L22).
-- `poseMoveTarget`: absolute target pose for `target_pose` (`[x,y,z]`, `[x,y,z,thz,thy,thx]`, or `[x,y,z,qw,qx,qy,qz]`). See [`config/tt_params.yaml#L26`](../config/tt_params.yaml#L26).
-- `poseMoveTimeScaling`: time scaling for `target_pose` (`min_jerk` or `linear`). See [`config/tt_params.yaml#L30`](../config/tt_params.yaml#L30).
-- `screwMoveUhat`: screw axis direction `u_hat` for `screw_move` (3D vector). See [`config/tt_params.yaml#L36`](../config/tt_params.yaml#L36).
-- `screwMoveR`: axis->TCP vector `r` for `screw_move` (3D vector; `||r||` is radius). See [`config/tt_params.yaml#L37`](../config/tt_params.yaml#L37).
-- `screwMoveTheta`: total rotation `theta` for `screw_move` (radians). See [`config/tt_params.yaml#L38`](../config/tt_params.yaml#L38).
-- `screwMoveInToolFrame`: if `true`, interpret `screwMoveUhat`/`screwMoveR` in the initial EE/tool frame (body-fixed screw). See [`config/tt_params.yaml#L39`](../config/tt_params.yaml#L39).
-- `screwMoveTimeScaling`: time scaling for `screw_move` (`min_jerk` or `linear`). See [`config/tt_params.yaml#L40`](../config/tt_params.yaml#L40).
+- `timeScaling`: time scaling for finite trajectories (`target_pose`, `linear_move`, `screw_move`): `min_jerk` or `linear`. See [`config/tt_params.yaml#L11`](../config/tt_params.yaml#L11).
+- `poseMoveTarget`: absolute target pose for `target_pose` (`[x,y,z]`, `[x,y,z,thz,thy,thx]`, or `[x,y,z,qw,qx,qy,qz]`). See [`config/tt_params.yaml#L15`](../config/tt_params.yaml#L15).
+- `linearMoveOffset`: 6D offset `[dx, dy, dz, thz, thy, thx]` (meters, radians) for `linear_move`. See [`config/tt_params.yaml#L22`](../config/tt_params.yaml#L22).
+- `linearMoveOffsetInToolFrame`: if `true`, interpret `linearMoveOffset` in the initial EE/tool frame. See [`config/tt_params.yaml#L23`](../config/tt_params.yaml#L23).
+- `screwMoveUhat`: screw axis direction `u_hat` for `screw_move` (3D vector). See [`config/tt_params.yaml#L30`](../config/tt_params.yaml#L30).
+- `screwMoveR`: axis->EE vector `r` for `screw_move` (3D vector; `||r||` is radius). See [`config/tt_params.yaml#L31`](../config/tt_params.yaml#L31).
+- `screwMoveTheta`: total rotation `theta` for `screw_move` (radians). See [`config/tt_params.yaml#L34`](../config/tt_params.yaml#L34).
+- `screwMoveInToolFrame`: if `true`, interpret `screwMoveUhat`/`screwMoveR` in the initial EE frame (body-screw). See [`config/tt_params.yaml#L35`](../config/tt_params.yaml#L35).
+- `amplitude`: figure-eight amplitude \(A\) (meters). See [`config/tt_params.yaml#L38`](../config/tt_params.yaml#L38).
+- `frequency`: sinusoid frequency \(f\) (Hz). See [`config/tt_params.yaml#L39`](../config/tt_params.yaml#L39).
+- `axisX/Y/Z`: normal vector for the motion plane. See [`config/tt_params.yaml#L40`](../config/tt_params.yaml#L40).
 
 Monitor parameters:
-- `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L56`](../config/tt_params.yaml#L56).
-- `publishTF`: if `true`, publish a TF for the closest reference waypoint. See [`config/tt_params.yaml#L57`](../config/tt_params.yaml#L57).
-- `closestFrameId`: child frame id for the closest-waypoint TF. See [`config/tt_params.yaml#L58`](../config/tt_params.yaml#L58).
-- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L59`](../config/tt_params.yaml#L59).
-- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L60`](../config/tt_params.yaml#L60).
-- `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L62`](../config/tt_params.yaml#L62).
-- `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L65`](../config/tt_params.yaml#L65).
-- `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L68`](../config/tt_params.yaml#L68).
+- `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L58`](../config/tt_params.yaml#L58).
+- `publishTF`: if `true`, publish a TF for the closest reference waypoint. See [`config/tt_params.yaml#L59`](../config/tt_params.yaml#L59).
+- `closestFrameId`: child frame id for the closest-waypoint TF. See [`config/tt_params.yaml#L60`](../config/tt_params.yaml#L60).
+- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L61`](../config/tt_params.yaml#L61).
+- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L62`](../config/tt_params.yaml#L62).
+- `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L64`](../config/tt_params.yaml#L64).
+- `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L67`](../config/tt_params.yaml#L67).
+- `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L70`](../config/tt_params.yaml#L70).

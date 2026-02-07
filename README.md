@@ -39,8 +39,11 @@ colcon build --symlink-install \
 `trajectory_tt_publisher` supports these `trajectoryType` values (see `config/tt_params.yaml`):
 
 - `figure_eight`: Periodic figure-eight around the initial EE pose.
-- `linear_move`: Apply a relative offset (global frame or tool frame) with `linearMoveTimeScaling` (`linear` / `min_jerk`).
-- `target_pose`: Move in a straight line (global frame) from the initial EE pose to an absolute target pose with `poseMoveTimeScaling` (`linear` / `min_jerk`).
+- `linear_move`: Apply a relative offset (global frame or tool frame).
+- `target_pose`: Move in a straight line (global frame) from the initial EE pose to an absolute target pose.
+- `screw_move`: Relative 6D screw motion starting from the current EE pose.
+
+Finite trajectories (`linear_move`, `target_pose`, `screw_move`) use `timeScaling` (`linear` / `min_jerk`).
 
 ## Pause / Resume
 

@@ -25,14 +25,14 @@ FRAME_ID = "ur_arm_tool0"
 RATE_HZ = 100.0
 
 # Translation DOFs
-DX_AMP, DX_FREQ, DX_PHASE, DX_BIAS = 0.00, 0.5, 0.0, -0.05
+DX_AMP, DX_FREQ, DX_PHASE, DX_BIAS = 0.00, 0.5, 0.0, 0.0
 DY_AMP, DY_FREQ, DY_PHASE, DY_BIAS = 0.00, 0.5, 0.0, 0.0
 DZ_AMP, DZ_FREQ, DZ_PHASE, DZ_BIAS = 0.00, 0.5, 0.0, 0.0
 
 # Rotation DOFs (axis-angle in radians): axis (ax,ay,az) and angle theta.
 # If the axis is (0,0,0) or theta ~ 0, identity rotation is published.
 AX, AY, AZ = 1.0, 0.0, 0.0
-THETA_AMP, THETA_FREQ, THETA_PHASE, THETA_BIAS = 0.00, 0.5, 0.0, 0.8
+THETA_AMP, THETA_FREQ, THETA_PHASE, THETA_BIAS = 0.00, 0.5, 0.0, -0.38
 
 
 def _sine(t: float, amp: float, freq: float, phase: float, bias: float) -> float:

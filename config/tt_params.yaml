@@ -32,7 +32,7 @@ trajectory_tt_publisher:
     # theta: screw angle about the axis [rad]
     # S = [r x u_hat; u_hat] is the (body-)screw axis in se(3) represented in EE frame
     screwMoveUhat: [0.0, 1.0, 0.0]
-    screwMoveR: [-0.2, 0.0, 0.0]
+    screwMoveR: [-0.1, 0.0, 0.0]
     # screwMoveUhat: [0.0, 0.0, 1.0]
     # screwMoveR: [0.05, 0.0, 0.0]
     screwMoveTheta: 1.57079632679 # +pi/2

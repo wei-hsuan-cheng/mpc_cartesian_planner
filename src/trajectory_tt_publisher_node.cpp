@@ -579,17 +579,30 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     if (!getDeltaPose(dp, dq, this->now())) return;
 
     if (deltaPoseInToolFrame_) {
+      // Delta is expressed in the EE/tool frame at the start of the published horizon (k=0).
+      // Apply it consistently to all waypoints by conjugating into world:
+      //   Delta_world = T0 * Delta_tool * T0^{-1}
+      //   T'_k = Delta_world * T_k
+      const Eigen::Vector3d p0 = traj.position.front();
+      const Eigen::Quaterniond q0 = traj.quat.front().normalized();
+      const Eigen::Quaterniond q_world = (q0 * dq * q0.conjugate()).normalized();
+      const Eigen::Matrix3d R_world = q_world.toRotationMatrix();
+      const Eigen::Vector3d dp_world = q0.toRotationMatrix() * dp;
+
       for (std::size_t i = 0; i < traj.size(); ++i) {
         const Eigen::Quaterniond q_nom = traj.quat[i].normalized();
-        traj.position[i] = traj.position[i] + q_nom.toRotationMatrix() * dp;
-        traj.quat[i] = (q_nom * dq).normalized();
+        const Eigen::Vector3d p_rel = traj.position[i] - p0;
+        traj.position[i] = p0 + dp_world + R_world * p_rel;
+        traj.quat[i] = (q_world * q_nom).normalized();
       }
     } else {
-      // Delta is expressed in world frame.
+      // Delta is expressed in world frame: T'_k = Delta_world * T_k
+      const Eigen::Quaterniond q_world = dq.normalized();
+      const Eigen::Matrix3d R_world = q_world.toRotationMatrix();
       for (std::size_t i = 0; i < traj.size(); ++i) {
         const Eigen::Quaterniond q_nom = traj.quat[i].normalized();
-        traj.position[i] = traj.position[i] + dp;
-        traj.quat[i] = (dq * q_nom).normalized();
+        traj.position[i] = dp + R_world * traj.position[i];
+        traj.quat[i] = (q_world * q_nom).normalized();
       }
     }
   }

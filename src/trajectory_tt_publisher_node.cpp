@@ -818,11 +818,11 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
       marker.id = static_cast<int>(i);
       marker.type = visualization_msgs::msg::Marker::SPHERE;
       marker.action = visualization_msgs::msg::Marker::ADD;
-      marker.scale.x = marker.scale.y = marker.scale.z = 0.01;
+      marker.scale.x = marker.scale.y = marker.scale.z = 0.005;
       marker.color.r = 0.4660f;
       marker.color.g = 0.6740f;
       marker.color.b = 0.1880f;
-      marker.color.a = (i < passed) ? 0.2f : 1.0f;
+      marker.color.a = (i < passed) ? 0.1f : 1.0f;
 
       marker.pose.position = ocs2::ros_msg_helpers::getPointMsg(traj.position[i]);
       marker.pose.orientation = ocs2::ros_msg_helpers::getOrientationMsg(traj.quat[i]);

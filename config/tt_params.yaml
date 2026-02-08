@@ -50,7 +50,7 @@ trajectory_tt_publisher:
     # Intervention: on DIVERGED or FINISHED, publish a HOLD target at the current EE pose and stop TT publishing.
     interveneHoldOnDivergedOrFinished: true
 
-    # Optional safety: publish a short burst of zero base cmd_vel on intervention/pause.
+    # Optional safety: publish a short burst of zero base cmd_vel on intervention/pause (no use in arm-only mode, but required for mobile manipulator).
     publishZeroBaseCmdOnIntervention: true
     baseCmdTopic: "/cmd_vel"
     zeroBaseCmdBurstCount: 10

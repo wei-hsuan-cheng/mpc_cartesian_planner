@@ -400,16 +400,19 @@ TT publisher parameters:
 - `amplitude`: figure-eight amplitude \(A\) (meters). See [`config/tt_params.yaml#L43`](../config/tt_params.yaml#L43).
 - `frequency`: sinusoid frequency \(f\) (Hz). See [`config/tt_params.yaml#L44`](../config/tt_params.yaml#L44).
 - `axisX/Y/Z`: normal vector for the motion plane. See [`config/tt_params.yaml#L45`](../config/tt_params.yaml#L45).
-- `publishZeroBaseCmdOnIntervention`: if `true`, publish a short burst of zero `cmd_vel` when tracking finishes/diverges or when you manually pause TT. See [`config/tt_params.yaml#L54`](../config/tt_params.yaml#L54).
-- `baseCmdTopic`: base `cmd_vel` topic name for the zero-command burst. See [`config/tt_params.yaml#L55`](../config/tt_params.yaml#L55).
-- `zeroBaseCmdBurstCount`, `zeroBaseCmdBurstRate`: how many zero messages to publish and at what rate. See [`config/tt_params.yaml#L56`](../config/tt_params.yaml#L56).
+- `deltaPoseTopic`: reactive delta pose `PoseStamped` topic to add to the nominal planned EE trajectory (e.g. from an admittance controller). See [`config/tt_params.yaml#L56`](../config/tt_params.yaml#L56).
+- `deltaPoseInToolFrame`: if `true` (default), interpret delta pose in each waypoint’s EE/tool frame and apply it to all waypoints. See [`config/tt_params.yaml#L57`](../config/tt_params.yaml#L57).
+- `deltaPoseTimeout`: if > 0, ignore stale delta poses older than this timeout. See [`config/tt_params.yaml#L58`](../config/tt_params.yaml#L58).
+- `publishZeroBaseCmdOnIntervention`: if `true`, publish a short burst of zero `cmd_vel` when tracking finishes/diverges or when you manually pause TT. See [`config/tt_params.yaml#L61`](../config/tt_params.yaml#L61).
+- `baseCmdTopic`: base `cmd_vel` topic name for the zero-command burst. See [`config/tt_params.yaml#L62`](../config/tt_params.yaml#L62).
+- `zeroBaseCmdBurstCount`, `zeroBaseCmdBurstRate`: how many zero messages to publish and at what rate. See [`config/tt_params.yaml#L63`](../config/tt_params.yaml#L63).
 
 Monitor parameters:
-- `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L70`](../config/tt_params.yaml#L70).
-- `publishTF`: if `true`, publish a TF for the closest reference waypoint. See [`config/tt_params.yaml#L71`](../config/tt_params.yaml#L71).
-- `closestFrameId`: child frame id for the closest-waypoint TF. See [`config/tt_params.yaml#L72`](../config/tt_params.yaml#L72).
-- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L73`](../config/tt_params.yaml#L73).
-- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L74`](../config/tt_params.yaml#L74).
-- `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L76`](../config/tt_params.yaml#L76).
-- `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L79`](../config/tt_params.yaml#L79).
-- `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L82`](../config/tt_params.yaml#L82).
+- `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L77`](../config/tt_params.yaml#L77).
+- `publishTF`: if `true`, publish a TF for the closest reference waypoint. See [`config/tt_params.yaml#L78`](../config/tt_params.yaml#L78).
+- `closestFrameId`: child frame id for the closest-waypoint TF. See [`config/tt_params.yaml#L79`](../config/tt_params.yaml#L79).
+- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L80`](../config/tt_params.yaml#L80).
+- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L81`](../config/tt_params.yaml#L81).
+- `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L83`](../config/tt_params.yaml#L83).
+- `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L86`](../config/tt_params.yaml#L86).
+- `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L89`](../config/tt_params.yaml#L89).

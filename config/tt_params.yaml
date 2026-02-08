@@ -1,7 +1,7 @@
 trajectory_tt_publisher:
   ros__parameters:
     publishRate: 100.0
-    publishOnce: true
+    publishOnce: false
     commandFrameId: command
 
     #################### Trajectory parameters ####################
@@ -46,12 +46,19 @@ trajectory_tt_publisher:
     axisY: 0.0
     axisZ: 1.0
 
+    #################### Admittance delta pose (optional) ####################
+    # Subscribe a reactive delta pose (PoseStamped) and add it to the nominal planned trajectory before publishing.
+    # Default: expressed in each waypoint's EE/tool frame and applied to all waypoints (constant over the horizon).
+    deltaPoseTopic: "/admittance_controller/delta_pose"
+    deltaPoseInToolFrame: true
+    deltaPoseTimeout: 0.0 # [sec] 0.0 -> never timeout (use last received delta forever)
+
     #################### Intervention and mode schedule/switching settings ####################
     # Intervention: on DIVERGED or FINISHED, publish a HOLD target at the current EE pose and stop TT publishing.
     interveneHoldOnDivergedOrFinished: true
 
-    # Optional safety: publish a short burst of zero base cmd_vel on intervention/pause (no use in arm-only mode, but required for mobile manipulator).
-    publishZeroBaseCmdOnIntervention: true
+    # Optional safety: publish a short burst of zero base cmd_vel on intervention/pause.
+    publishZeroBaseCmdOnIntervention: false
     baseCmdTopic: "/cmd_vel"
     zeroBaseCmdBurstCount: 10
     zeroBaseCmdBurstRate: 50.0

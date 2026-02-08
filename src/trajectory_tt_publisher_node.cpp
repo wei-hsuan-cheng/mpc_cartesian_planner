@@ -229,7 +229,6 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<std::string>("trajectoryGlobalFrame", std::string("world"));
     this->declare_parameter<bool>("publishViz", true);
     this->declare_parameter<bool>("publishTF", true);
-    this->declare_parameter<bool>("publishOnce", false);
     this->declare_parameter<std::string>("commandFrameId", std::string("command"));
 
     this->declare_parameter<std::string>("trajectoryType", std::string("figure_eight"));
@@ -266,7 +265,6 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     globalFrame_ = this->get_parameter("trajectoryGlobalFrame").as_string();
     publishViz_ = this->get_parameter("publishViz").as_bool();
     publishTF_ = this->get_parameter("publishTF").as_bool();
-    publishOnce_ = this->get_parameter("publishOnce").as_bool();
     commandFrameId_ = this->get_parameter("commandFrameId").as_string();
     if (commandFrameId_.empty()) commandFrameId_ = "command";
 
@@ -376,7 +374,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
 
     // Publishers
     // In one-shot mode we latch the last target so late-joining subscribers can still receive it.
-    trajPub_ = std::make_unique<TrajectoryPublisher>(*this, robotName_, /*latch=*/publishOnce_);
+    trajPub_ = std::make_unique<TrajectoryPublisher>(*this, robotName_, /*latch=*/false);
     modeSchedulePub_ = this->create_publisher<ocs2_msgs::msg::ModeSchedule>(
         robotName_ + std::string("_mode_schedule"), rclcpp::QoS(1).reliable());
     // Publish an initial ModeSchedule once at startup so the controller has a mode even before activation.
@@ -451,7 +449,8 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
             trackingFinished_ = false;
             initialized_ = false;
             planner_.reset();
-            publishedOnce_ = false;
+            nominalTraj_ = PlannedCartesianTrajectory{};
+            haveNominalTraj_ = false;
           }
 
           publishDefaultModeSchedule(wasPaused ? "MANUAL_RESUME" : "MANUAL_ENABLE");
@@ -518,10 +517,6 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
 
     RCLCPP_INFO(this->get_logger(), "TT publisher started. Publishing to %s at %.1f Hz",
                 trajPub_->topic().c_str(), publishRate_);
-    if (publishOnce_) {
-      RCLCPP_INFO(this->get_logger(),
-                  "publishOnce=true: will publish the target trajectory once (use 'duration' as total duration) and then stop publishing.");
-    }
   }
 
  private:
@@ -590,10 +585,6 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     hold.quat = {q_hold, q_hold};
 
     trajPub_->publishEeTarget(hold, obs);
-
-    publishedTraj_ = hold;
-    havePublishedTraj_ = true;
-    publishedOnce_ = true;
 
     RCLCPP_INFO(this->get_logger(), "Published HOLD target (reason=%s) at t=%.3f", reason.c_str(), t0);
   }
@@ -773,35 +764,25 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
 
     if (!planner_) return;
 
-    PlannedCartesianTrajectory traj;
-    if (!publishOnce_ || !publishedOnce_) {
-      traj = planner_->plan(obs);
-
-      // Publish EE target
-      trajPub_->publishEeTarget(traj, obs);
-
-      if (publishViz_ && markerPub_ && posePub_) {
-        publishViz(traj);
-      }
-
-      if (publishOnce_ && !publishedOnce_) {
-        publishedTraj_ = traj;
-        havePublishedTraj_ = !publishedTraj_.empty();
-        publishedOnce_ = true;
-        RCLCPP_INFO(this->get_logger(), "One-shot trajectory published (%zu samples).", traj.size());
-      }
+    if (!haveNominalTraj_) {
+      nominalTraj_ = planner_->plan(obs);
+      haveNominalTraj_ = !nominalTraj_.empty();
+      if (!haveNominalTraj_) return;
     }
 
     if (publishTF_ && tfBroadcaster_) {
-      if (publishOnce_ && publishedOnce_ && havePublishedTraj_) {
-        Eigen::Vector3d p;
-        Eigen::Quaterniond q;
-        if (sampleTrajectoryAtTime(publishedTraj_, obs.time, p, q)) {
-          publishCommandTf(p, q);
-        }
-      } else if (!traj.empty()) {
-        publishCommandTf(traj.position.front(), traj.quat.front());
+      Eigen::Vector3d p;
+      Eigen::Quaterniond q;
+      if (sampleTrajectoryAtTime(nominalTraj_, obs.time, p, q)) {
+        publishCommandTf(p, q);
       }
+    }
+
+    // Publish EE target (high rate). No replanning: always publish the same nominal trajectory (plus viz).
+    trajPub_->publishEeTarget(nominalTraj_, obs);
+
+    if (publishViz_ && markerPub_ && posePub_) {
+      publishViz(nominalTraj_, obs.time);
     }
   }
 
@@ -817,7 +798,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     tfBroadcaster_->sendTransform(tf);
   }
 
-  void publishViz(const PlannedCartesianTrajectory& traj) {
+  void publishViz(const PlannedCartesianTrajectory& traj, double now_time) {
     visualization_msgs::msg::MarkerArray markerArray;
     geometry_msgs::msg::PoseArray poseArray;
     poseArray.header.frame_id = globalFrame_;
@@ -825,6 +806,9 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
 
     markerArray.markers.reserve(traj.size());
     poseArray.poses.reserve(traj.size());
+
+    const auto it = std::upper_bound(traj.time.begin(), traj.time.end(), now_time);
+    const std::size_t passed = static_cast<std::size_t>(it - traj.time.begin());
 
     for (std::size_t i = 0; i < traj.size(); ++i) {
       visualization_msgs::msg::Marker marker;
@@ -838,16 +822,18 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
       marker.color.r = 0.4660f;
       marker.color.g = 0.6740f;
       marker.color.b = 0.1880f;
-      marker.color.a = 1.0f;
+      marker.color.a = (i < passed) ? 0.2f : 1.0f;
 
       marker.pose.position = ocs2::ros_msg_helpers::getPointMsg(traj.position[i]);
       marker.pose.orientation = ocs2::ros_msg_helpers::getOrientationMsg(traj.quat[i]);
       markerArray.markers.push_back(marker);
 
-      geometry_msgs::msg::Pose pose;
-      pose.position = marker.pose.position;
-      pose.orientation = marker.pose.orientation;
-      poseArray.poses.push_back(pose);
+      if (i >= passed) {
+        geometry_msgs::msg::Pose pose;
+        pose.position = marker.pose.position;
+        pose.orientation = marker.pose.orientation;
+        poseArray.poses.push_back(pose);
+      }
     }
 
     markerPub_->publish(markerArray);
@@ -870,8 +856,6 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   Eigen::Vector3d axis_{0, 0, 1};
   bool publishViz_{true};
   bool publishTF_{true};
-  bool publishOnce_{false};
-  bool publishedOnce_{false};
   bool trackingFinished_{false};
   std::string commandFrameId_{"command"};
   std::string trajectoryType_{"figure_eight"};
@@ -898,8 +882,8 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   std::string mpcControllerName_{"mpc_controller"};
   bool publishModeScheduleOnEnable_{true};
   int modeScheduleMode_{1};
-  PlannedCartesianTrajectory publishedTraj_;
-  bool havePublishedTraj_{false};
+  PlannedCartesianTrajectory nominalTraj_;
+  bool haveNominalTraj_{false};
 
   // OCS2 / Pinocchio
   std::unique_ptr<ocs2::mobile_manipulator::MobileManipulatorInterface> interface_;

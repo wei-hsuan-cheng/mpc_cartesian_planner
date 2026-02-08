@@ -122,6 +122,60 @@ inline bool isHoldTrajectory(const PlannedCartesianTrajectory& traj) {
   return ang <= kAngEps;
 }
 
+struct TrajSignature {
+  std::size_t N = 0;
+  double t0 = 0.0;
+  double tN = 0.0;
+  Eigen::Vector3d p0{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d pMid{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d pN{Eigen::Vector3d::Zero()};
+  Eigen::Quaterniond q0{Eigen::Quaterniond::Identity()};
+  Eigen::Quaterniond qMid{Eigen::Quaterniond::Identity()};
+  Eigen::Quaterniond qN{Eigen::Quaterniond::Identity()};
+};
+
+inline TrajSignature signatureFromTraj(const PlannedCartesianTrajectory& traj) {
+  TrajSignature s;
+  s.N = traj.size();
+  if (traj.empty()) return s;
+  const std::size_t mid = s.N / 2;
+  s.t0 = traj.time.front();
+  s.tN = traj.time.back();
+  s.p0 = traj.position.front();
+  s.pMid = traj.position[mid];
+  s.pN = traj.position.back();
+  s.q0 = traj.quat.front().normalized();
+  s.qMid = traj.quat[mid].normalized();
+  s.qN = traj.quat.back().normalized();
+  return s;
+}
+
+inline bool approxSameTrajSig(const TrajSignature& a, const TrajSignature& b) {
+  if (a.N != b.N) return false;
+  if (a.N == 0) return true;
+
+  constexpr double kTimeEps = 1e-6;
+  constexpr double kPosEps = 1e-6;
+  constexpr double kQuatDotEps = 1e-9;
+
+  if (std::abs(a.t0 - b.t0) > kTimeEps) return false;
+  if (std::abs(a.tN - b.tN) > kTimeEps) return false;
+  if ((a.p0 - b.p0).norm() > kPosEps) return false;
+  if ((a.pMid - b.pMid).norm() > kPosEps) return false;
+  if ((a.pN - b.pN).norm() > kPosEps) return false;
+
+  auto sameQuat = [](Eigen::Quaterniond qa, Eigen::Quaterniond qb) {
+    qa.normalize();
+    qb.normalize();
+    const double d = std::abs(qa.dot(qb));
+    return (1.0 - d) <= kQuatDotEps;
+  };
+  if (!sameQuat(a.q0, b.q0)) return false;
+  if (!sameQuat(a.qMid, b.qMid)) return false;
+  if (!sameQuat(a.qN, b.qN)) return false;
+  return true;
+}
+
 }  // namespace
 
 // ============================================================================
@@ -225,6 +279,7 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
         [&](const ocs2_msgs::msg::MpcTargetTrajectories::ConstSharedPtr msg) {
           const auto traj = fromTargetMsg(*msg);
           const bool is_hold = isHoldTrajectory(traj);
+          const auto sig = signatureFromTraj(traj);
           bool wake = false;
           {
             std::lock_guard<std::mutex> lock(mtx_);
@@ -234,7 +289,13 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
                 traj.time.size() == traj.position.size() &&
                 traj.time.size() == traj.quat.size();
             if (haveRef_) {
-              monitor_->setTrajectory(latestRef_);
+              // Avoid resetting the window-search state when the same trajectory is republished
+              // at a high rate (otherwise progress can get stuck at ~window/(N-1)).
+              if (!haveLastSig_ || !approxSameTrajSig(sig, lastSig_)) {
+                monitor_->setTrajectory(latestRef_);
+                lastSig_ = sig;
+                haveLastSig_ = true;
+              }
             }
             // If we entered idle mode due to FINISHED/DIVERGED, only wake up when a new "real"
             // trajectory arrives (ignore the 2-point HOLD trajectory published on intervention).
@@ -431,6 +492,9 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
   PlannedCartesianTrajectory latestRef_;
   bool haveObs_{false}, haveRef_{false};
   bool idle_{false};
+
+  TrajSignature lastSig_;
+  bool haveLastSig_{false};
 };
 
 }  // namespace mpc_cartesian_planner

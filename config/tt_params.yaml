@@ -1,7 +1,6 @@
 trajectory_tt_publisher:
   ros__parameters:
     publishRate: 100.0
-    publishOnce: true
     commandFrameId: command
 
     #################### Trajectory parameters ####################

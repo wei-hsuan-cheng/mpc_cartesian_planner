@@ -49,13 +49,11 @@ If the model paths are not set, the node falls back to `centerP_ = 0` and `q0 = 
 Each tick:
 
 1) Grabs the latest observation. See [`src/trajectory_tt_publisher_node.cpp#L187`](../src/trajectory_tt_publisher_node.cpp#L187).
-2) Plans a fresh horizon starting at the current observation time `t0 = obs.time`. See [`src/cartesian_trajectory_planner.cpp#L33`](../src/cartesian_trajectory_planner.cpp#L33).
-3) Publishes the EE target trajectory as `MpcTargetTrajectories`. See [`src/trajectory_tt_publisher_node.cpp#L223`](../src/trajectory_tt_publisher_node.cpp#L223) and [`src/trajectory_publisher.cpp#L13`](../src/trajectory_publisher.cpp#L13).
+2) Republishes the same nominal trajectory planned at initialization. See [`src/trajectory_tt_publisher_node.cpp#L223`](../src/trajectory_tt_publisher_node.cpp#L223).
+3) Publishes the EE target trajectory as `MpcTargetTrajectories`. See [`src/trajectory_publisher.cpp#L13`](../src/trajectory_publisher.cpp#L13).
 4) Optionally publishes TF + visualization. See [`src/trajectory_tt_publisher_node.cpp#L228`](../src/trajectory_tt_publisher_node.cpp#L228).
 
-Note: in the default *receding-horizon* behavior (publishing a new horizon each tick), the monitor’s `progress` (normalized waypoint index) will typically stay near zero, since the closest waypoint is usually near the start of the latest horizon.
-
-If you want a **finite trajectory** with meaningful `progress` and a terminal `FINISHED` state, set `publishOnce: true` in the TT publisher params. In this mode the node publishes the target trajectory once (with `duration` as the total duration) and then stops publishing.
+Note: this package intentionally avoids a *receding-horizon* replanning loop (planning a new horizon each tick), because it makes the monitor’s `progress` stay near zero (the closest waypoint is near the start of the latest horizon).
 
 ## 3) Planner math (Trajectory Types)
 
@@ -384,32 +382,31 @@ The demo config is in [`config/tt_params.yaml#L1`](../config/tt_params.yaml#L1).
 
 TT publisher parameters:
 - `publishRate`: publishing frequency (Hz). See [`config/tt_params.yaml#L3`](../config/tt_params.yaml#L3).
-- `publishOnce`: if `true`, publish the target trajectory once and stop publishing (useful for finite tracks + `FINISHED`). See [`config/tt_params.yaml#L4`](../config/tt_params.yaml#L4).
-- `commandFrameId`: child frame id for the published command TF. See [`config/tt_params.yaml#L5`](../config/tt_params.yaml#L5).
-- `trajectoryType`: trajectory generator (`figure_eight`, `linear_move`, `target_pose`, or `screw_move`). See [`config/tt_params.yaml#L9`](../config/tt_params.yaml#L9).
-- `duration`: trajectory duration \(T\) (seconds). In `publishOnce=true`, this is the total trajectory duration. See [`config/tt_params.yaml#L10`](../config/tt_params.yaml#L10).
-- `dt`: discretization step \(\Delta t\) (seconds). See [`config/tt_params.yaml#L11`](../config/tt_params.yaml#L11).
-- `timeScaling`: time scaling for finite trajectories (`target_pose`, `linear_move`, `screw_move`): `min_jerk` or `linear`. See [`config/tt_params.yaml#L12`](../config/tt_params.yaml#L12).
-- `poseMoveTarget`: absolute target pose for `target_pose` (`[x,y,z]`, `[x,y,z,thz,thy,thx]`, or `[x,y,z,qw,qx,qy,qz]`). See [`config/tt_params.yaml#L17`](../config/tt_params.yaml#L17).
-- `linearMoveOffset`: 6D offset `[dx, dy, dz, thz, thy, thx]` (meters, radians) for `linear_move`. See [`config/tt_params.yaml#L25`](../config/tt_params.yaml#L25).
-- `linearMoveOffsetInToolFrame`: if `true`, interpret `linearMoveOffset` in the initial EE/tool frame. See [`config/tt_params.yaml#L26`](../config/tt_params.yaml#L26).
-- `screwMoveUhat`: screw axis direction `u_hat` for `screw_move` (3D vector). See [`config/tt_params.yaml#L34`](../config/tt_params.yaml#L34).
-- `screwMoveR`: axis->EE vector `r` for `screw_move` (3D vector; `||r||` is radius). See [`config/tt_params.yaml#L35`](../config/tt_params.yaml#L35).
-- `screwMoveTheta`: total rotation `theta` for `screw_move` (radians). See [`config/tt_params.yaml#L38`](../config/tt_params.yaml#L38).
-- `screwMoveInToolFrame`: if `true`, interpret `screwMoveUhat`/`screwMoveR` in the initial EE frame (body-screw). See [`config/tt_params.yaml#L39`](../config/tt_params.yaml#L39).
-- `amplitude`: figure-eight amplitude \(A\) (meters). See [`config/tt_params.yaml#L43`](../config/tt_params.yaml#L43).
-- `frequency`: sinusoid frequency \(f\) (Hz). See [`config/tt_params.yaml#L44`](../config/tt_params.yaml#L44).
-- `axisX/Y/Z`: normal vector for the motion plane. See [`config/tt_params.yaml#L45`](../config/tt_params.yaml#L45).
-- `publishZeroBaseCmdOnIntervention`: if `true`, publish a short burst of zero `cmd_vel` when tracking finishes/diverges or when you manually pause TT. See [`config/tt_params.yaml#L54`](../config/tt_params.yaml#L54).
-- `baseCmdTopic`: base `cmd_vel` topic name for the zero-command burst. See [`config/tt_params.yaml#L55`](../config/tt_params.yaml#L55).
-- `zeroBaseCmdBurstCount`, `zeroBaseCmdBurstRate`: how many zero messages to publish and at what rate. See [`config/tt_params.yaml#L56`](../config/tt_params.yaml#L56).
+- `commandFrameId`: child frame id for the published command TF. See [`config/tt_params.yaml#L4`](../config/tt_params.yaml#L4).
+- `trajectoryType`: trajectory generator (`figure_eight`, `linear_move`, `target_pose`, or `screw_move`). See [`config/tt_params.yaml#L8`](../config/tt_params.yaml#L8).
+- `duration`: trajectory duration \(T\) (seconds). See [`config/tt_params.yaml#L9`](../config/tt_params.yaml#L9).
+- `dt`: discretization step \(\Delta t\) (seconds). See [`config/tt_params.yaml#L10`](../config/tt_params.yaml#L10).
+- `timeScaling`: time scaling for finite trajectories (`target_pose`, `linear_move`, `screw_move`): `min_jerk` or `linear`. See [`config/tt_params.yaml#L11`](../config/tt_params.yaml#L11).
+- `poseMoveTarget`: absolute target pose for `target_pose` (`[x,y,z]`, `[x,y,z,thz,thy,thx]`, or `[x,y,z,qw,qx,qy,qz]`). See [`config/tt_params.yaml#L16`](../config/tt_params.yaml#L16).
+- `linearMoveOffset`: 6D offset `[dx, dy, dz, thz, thy, thx]` (meters, radians) for `linear_move`. See [`config/tt_params.yaml#L24`](../config/tt_params.yaml#L24).
+- `linearMoveOffsetInToolFrame`: if `true`, interpret `linearMoveOffset` in the initial EE/tool frame. See [`config/tt_params.yaml#L25`](../config/tt_params.yaml#L25).
+- `screwMoveUhat`: screw axis direction `u_hat` for `screw_move` (3D vector). See [`config/tt_params.yaml#L33`](../config/tt_params.yaml#L33).
+- `screwMoveR`: axis->EE vector `r` for `screw_move` (3D vector; `||r||` is radius). See [`config/tt_params.yaml#L34`](../config/tt_params.yaml#L34).
+- `screwMoveTheta`: total rotation `theta` for `screw_move` (radians). See [`config/tt_params.yaml#L37`](../config/tt_params.yaml#L37).
+- `screwMoveInToolFrame`: if `true`, interpret `screwMoveUhat`/`screwMoveR` in the initial EE frame (body-screw). See [`config/tt_params.yaml#L38`](../config/tt_params.yaml#L38).
+- `amplitude`: figure-eight amplitude \(A\) (meters). See [`config/tt_params.yaml#L42`](../config/tt_params.yaml#L42).
+- `frequency`: sinusoid frequency \(f\) (Hz). See [`config/tt_params.yaml#L43`](../config/tt_params.yaml#L43).
+- `axisX/Y/Z`: normal vector for the motion plane. See [`config/tt_params.yaml#L44`](../config/tt_params.yaml#L44).
+- `publishZeroBaseCmdOnIntervention`: if `true`, publish a short burst of zero `cmd_vel` when tracking finishes/diverges or when you manually pause TT. See [`config/tt_params.yaml#L53`](../config/tt_params.yaml#L53).
+- `baseCmdTopic`: base `cmd_vel` topic name for the zero-command burst. See [`config/tt_params.yaml#L54`](../config/tt_params.yaml#L54).
+- `zeroBaseCmdBurstCount`, `zeroBaseCmdBurstRate`: how many zero messages to publish and at what rate. See [`config/tt_params.yaml#L55`](../config/tt_params.yaml#L55).
 
 Monitor parameters:
-- `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L70`](../config/tt_params.yaml#L70).
-- `publishTF`: if `true`, publish a TF for the closest reference waypoint. See [`config/tt_params.yaml#L71`](../config/tt_params.yaml#L71).
-- `closestFrameId`: child frame id for the closest-waypoint TF. See [`config/tt_params.yaml#L72`](../config/tt_params.yaml#L72).
-- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L73`](../config/tt_params.yaml#L73).
-- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L74`](../config/tt_params.yaml#L74).
-- `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L76`](../config/tt_params.yaml#L76).
-- `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L79`](../config/tt_params.yaml#L79).
-- `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L82`](../config/tt_params.yaml#L82).
+- `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L69`](../config/tt_params.yaml#L69).
+- `publishTF`: if `true`, publish a TF for the closest reference waypoint. See [`config/tt_params.yaml#L70`](../config/tt_params.yaml#L70).
+- `closestFrameId`: child frame id for the closest-waypoint TF. See [`config/tt_params.yaml#L71`](../config/tt_params.yaml#L71).
+- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L72`](../config/tt_params.yaml#L72).
+- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L73`](../config/tt_params.yaml#L73).
+- `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L75`](../config/tt_params.yaml#L75).
+- `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L78`](../config/tt_params.yaml#L78).
+- `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L81`](../config/tt_params.yaml#L81).

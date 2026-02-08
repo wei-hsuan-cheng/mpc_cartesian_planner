@@ -40,6 +40,7 @@
 #include <controller_manager_msgs/srv/switch_controller.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <tf2_ros/transform_broadcaster.h>
@@ -240,6 +241,10 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<double>("screwMoveTheta", 1.5707963267948966);  // pi/2
     this->declare_parameter<bool>("screwMoveInToolFrame", true);
     this->declare_parameter<bool>("interveneHoldOnDivergedOrFinished", false);
+    this->declare_parameter<bool>("publishZeroBaseCmdOnIntervention", false);
+    this->declare_parameter<std::string>("baseCmdTopic", std::string("/cmd_vel"));
+    this->declare_parameter<int>("zeroBaseCmdBurstCount", 10);
+    this->declare_parameter<double>("zeroBaseCmdBurstRate", 50.0);
     this->declare_parameter<bool>("switchMpcControllerOnIntervention", false);
     this->declare_parameter<std::string>("controllerManagerSwitchService", std::string("/controller_manager/switch_controller"));
     this->declare_parameter<std::string>("mpcControllerName", std::string("mpc_controller"));
@@ -284,6 +289,10 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     }
     linearMoveOffsetInToolFrame_ = this->get_parameter("linearMoveOffsetInToolFrame").as_bool();
     interveneHoldOnDivergedOrFinished_ = this->get_parameter("interveneHoldOnDivergedOrFinished").as_bool();
+    publishZeroBaseCmdOnIntervention_ = this->get_parameter("publishZeroBaseCmdOnIntervention").as_bool();
+    baseCmdTopic_ = this->get_parameter("baseCmdTopic").as_string();
+    zeroBaseCmdBurstCount_ = static_cast<int>(this->get_parameter("zeroBaseCmdBurstCount").as_int());
+    zeroBaseCmdBurstRate_ = this->get_parameter("zeroBaseCmdBurstRate").as_double();
     switchMpcControllerOnIntervention_ = this->get_parameter("switchMpcControllerOnIntervention").as_bool();
     controllerManagerSwitchService_ = this->get_parameter("controllerManagerSwitchService").as_string();
     mpcControllerName_ = this->get_parameter("mpcControllerName").as_string();
@@ -429,6 +438,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
 
             trackingFinished_ = true;
             if (timer_) timer_->cancel();
+            startZeroBaseCmdBurst("MANUAL_PAUSE");
             requestSwitchMpcController(/*activate=*/false, "MANUAL_PAUSE");
 
             res->success = true;
@@ -492,6 +502,7 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
           }
 
           trackingFinished_ = true;
+          startZeroBaseCmdBurst(msg->data);
           requestSwitchMpcController(/*activate=*/false, msg->data);
           if (finished) {
             RCLCPP_INFO(this->get_logger(), "Tracking finished. TT publisher entering idle mode.");
@@ -514,6 +525,45 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   }
 
  private:
+  void startZeroBaseCmdBurst(const std::string& reason) {
+    if (!publishZeroBaseCmdOnIntervention_) return;
+    if (baseCmdTopic_.empty()) return;
+    if (zeroBaseCmdBurstCount_ <= 0) return;
+
+    if (!baseCmdPub_) {
+      baseCmdPub_ = this->create_publisher<geometry_msgs::msg::Twist>(baseCmdTopic_, rclcpp::SystemDefaultsQoS());
+    }
+
+    zeroBaseCmdRemaining_ = zeroBaseCmdBurstCount_;
+    const double rate = std::max(1e-3, zeroBaseCmdBurstRate_);
+    const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0 / rate));
+
+    if (!zeroBaseCmdTimer_) {
+      zeroBaseCmdTimer_ = this->create_wall_timer(period, [this]() {
+        if (zeroBaseCmdRemaining_ <= 0) {
+          if (zeroBaseCmdTimer_) zeroBaseCmdTimer_->cancel();
+          return;
+        }
+        geometry_msgs::msg::Twist z;
+        baseCmdPub_->publish(z);
+        --zeroBaseCmdRemaining_;
+        if (zeroBaseCmdRemaining_ <= 0) {
+          if (zeroBaseCmdTimer_) zeroBaseCmdTimer_->cancel();
+        }
+      });
+    } else {
+      zeroBaseCmdTimer_->reset();
+    }
+
+    // Also publish one immediately to minimize latency.
+    geometry_msgs::msg::Twist z;
+    baseCmdPub_->publish(z);
+    --zeroBaseCmdRemaining_;
+
+    RCLCPP_INFO(this->get_logger(), "Publishing zero base cmd_vel burst (topic=%s count=%d rate=%.1fHz reason=%s)",
+                baseCmdTopic_.c_str(), zeroBaseCmdBurstCount_, zeroBaseCmdBurstRate_, reason.c_str());
+  }
+
   void publishHoldTrajectory(const SystemObservation& obs, const std::string& reason) {
     if (!trajPub_) return;
 
@@ -838,6 +888,11 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   double screwMoveTheta_{1.5707963267948966};
   bool screwMoveInToolFrame_{true};
   bool interveneHoldOnDivergedOrFinished_{false};
+  bool publishZeroBaseCmdOnIntervention_{false};
+  std::string baseCmdTopic_{"/cmd_vel"};
+  int zeroBaseCmdBurstCount_{10};
+  double zeroBaseCmdBurstRate_{50.0};
+  int zeroBaseCmdRemaining_{0};
   bool switchMpcControllerOnIntervention_{false};
   std::string controllerManagerSwitchService_{"/controller_manager/switch_controller"};
   std::string mpcControllerName_{"mpc_controller"};
@@ -869,10 +924,12 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switchControllerClient_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr markerPub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr posePub_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr baseCmdPub_;
   std::shared_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster_;
   rclcpp::Subscription<ocs2_msgs::msg::MpcObservation>::SharedPtr obsSub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trackingStatusSub_;
   rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr zeroBaseCmdTimer_;
 
   std::mutex mtx_;
   SystemObservation latestObs_;

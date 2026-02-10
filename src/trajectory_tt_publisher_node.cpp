@@ -51,9 +51,9 @@
 #include <ocs2_msgs/msg/mode_schedule.hpp>
 #include <ocs2_msgs/msg/mpc_observation.hpp>
 
-#include <ocs2_mobile_manipulator/MobileManipulatorInterface.h>
-#include <ocs2_mobile_manipulator/MobileManipulatorPinocchioMapping.h>
-#include <ocs2_mobile_manipulator/ManipulatorModelInfo.h>
+#include <mobile_manipulator_mpc/MobileManipulatorInterface.h>
+#include <mobile_manipulator_mpc/MobileManipulatorPinocchioMapping.h>
+#include <mobile_manipulator_mpc/ManipulatorModelInfo.h>
 
 #include <ocs2_pinocchio_interface/PinocchioInterface.h>
 
@@ -138,7 +138,7 @@ inline int32_t switchControllerStrictness() {
 
 // Compute EE pose via Pinocchio FK using OCS2 pinocchio mapping.
 inline bool computeEePose(ocs2::PinocchioInterface& pin,
-                          const ocs2::mobile_manipulator::MobileManipulatorPinocchioMapping& mapping,
+                          const ocs2::mobile_manipulator_mpc::MobileManipulatorPinocchioMapping& mapping,
                           std::size_t eeFrameId,
                           const ocs2::vector_t& state,
                           Eigen::Vector3d& p_out,
@@ -359,11 +359,11 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
 
     if (!taskFile_.empty() && !urdfFile_.empty() && !libFolder_.empty()) {
       try {
-        interface_ = std::make_unique<ocs2::mobile_manipulator::MobileManipulatorInterface>(taskFile_, libFolder_, urdfFile_);
+        interface_ = std::make_unique<ocs2::mobile_manipulator_mpc::MobileManipulatorInterface>(taskFile_, libFolder_, urdfFile_);
         // PinocchioInterface has no default ctor; store a copy behind a pointer.
         pin_ = std::make_unique<ocs2::PinocchioInterface>(interface_->getPinocchioInterface());
         modelInfo_ = interface_->getManipulatorModelInfo();
-        mapping_ = std::make_unique<ocs2::mobile_manipulator::MobileManipulatorPinocchioMapping>(modelInfo_);
+        mapping_ = std::make_unique<ocs2::mobile_manipulator_mpc::MobileManipulatorPinocchioMapping>(modelInfo_);
         eeFrameId_ = pin_->getModel().getFrameId(modelInfo_.eeFrame);
       } catch (const std::exception& e) {
         RCLCPP_WARN(this->get_logger(), "Failed to create MobileManipulatorInterface: %s", e.what());
@@ -886,10 +886,10 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   bool haveNominalTraj_{false};
 
   // OCS2 / Pinocchio
-  std::unique_ptr<ocs2::mobile_manipulator::MobileManipulatorInterface> interface_;
+  std::unique_ptr<ocs2::mobile_manipulator_mpc::MobileManipulatorInterface> interface_;
   std::unique_ptr<ocs2::PinocchioInterface> pin_;
-  ocs2::mobile_manipulator::ManipulatorModelInfo modelInfo_;
-  std::unique_ptr<ocs2::mobile_manipulator::MobileManipulatorPinocchioMapping> mapping_;
+  ocs2::mobile_manipulator_mpc::ManipulatorModelInfo modelInfo_;
+  std::unique_ptr<ocs2::mobile_manipulator_mpc::MobileManipulatorPinocchioMapping> mapping_;
   std::size_t eeFrameId_{0};
   std::mutex pinMtx_;
 

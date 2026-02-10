@@ -20,7 +20,7 @@
   <depend>ocs2_mpc</depend>
   <depend>ocs2_msgs</depend>
   <depend>ocs2_ros_interfaces</depend>
-  <depend>ocs2_mobile_manipulator</depend>
+  <depend>mobile_manipulator_mpc</depend>
   <depend>ocs2_pinocchio_interface</depend>
 
   <depend>pinocchio</depend>

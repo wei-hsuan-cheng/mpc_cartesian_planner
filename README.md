@@ -15,6 +15,10 @@ git clone \
   -b humble_stable
 
 git clone \
+  https://github.com/wei-hsuan-cheng/mobile_manipulator_mpc.git \
+  -b humble_stable
+
+git clone \
   https://github.com/wei-hsuan-cheng/mpc_controller.git \
   -b humble_stable
 

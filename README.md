@@ -49,6 +49,15 @@ colcon build --symlink-install \
 
 Finite trajectories (`linear_move`, `target_pose`, `screw_move`) use `timeScaling` (`linear` / `min_jerk`).
 
+## Path-based timing (spatial projection)
+
+By default, the TT reference is time-indexed (the target at time `t` is fixed once planned). If your low-level position controller introduces phase lag, you can retime the published target so `t_now` aligns to the closest spatial waypoint:
+
+- Set `referenceTiming: spatial_projection` in `config/tt_params.yaml`.
+- Tune `projectionWindow` / `projectionMaxBacktrack` (windowed nearest search + monotonic guard).
+
+This mode needs `taskFile` / `urdfFile` / `libFolder` so the TT publisher can compute the current end-effector pose via FK.
+
 ## Pause / Resume
 
 `trajectory_tt_publisher` provides a pause/resume service:

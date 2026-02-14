@@ -124,8 +124,6 @@ inline bool isHoldTrajectory(const PlannedCartesianTrajectory& traj) {
 
 struct TrajSignature {
   std::size_t N = 0;
-  double t0 = 0.0;
-  double tN = 0.0;
   Eigen::Vector3d p0{Eigen::Vector3d::Zero()};
   Eigen::Vector3d pMid{Eigen::Vector3d::Zero()};
   Eigen::Vector3d pN{Eigen::Vector3d::Zero()};
@@ -139,8 +137,6 @@ inline TrajSignature signatureFromTraj(const PlannedCartesianTrajectory& traj) {
   s.N = traj.size();
   if (traj.empty()) return s;
   const std::size_t mid = s.N / 2;
-  s.t0 = traj.time.front();
-  s.tN = traj.time.back();
   s.p0 = traj.position.front();
   s.pMid = traj.position[mid];
   s.pN = traj.position.back();
@@ -154,12 +150,9 @@ inline bool approxSameTrajSig(const TrajSignature& a, const TrajSignature& b) {
   if (a.N != b.N) return false;
   if (a.N == 0) return true;
 
-  constexpr double kTimeEps = 1e-6;
   constexpr double kPosEps = 1e-6;
   constexpr double kQuatDotEps = 1e-9;
 
-  if (std::abs(a.t0 - b.t0) > kTimeEps) return false;
-  if (std::abs(a.tN - b.tN) > kTimeEps) return false;
   if ((a.p0 - b.p0).norm() > kPosEps) return false;
   if ((a.pMid - b.pMid).norm() > kPosEps) return false;
   if ((a.pN - b.pN).norm() > kPosEps) return false;
@@ -281,6 +274,7 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
           const bool is_hold = isHoldTrajectory(traj);
           const auto sig = signatureFromTraj(traj);
           bool wake = false;
+          bool force_reset = false;
           {
             std::lock_guard<std::mutex> lock(mtx_);
             latestRef_ = traj;
@@ -288,20 +282,24 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
                 !traj.empty() &&
                 traj.time.size() == traj.position.size() &&
                 traj.time.size() == traj.quat.size();
-            if (haveRef_) {
-              // Avoid resetting the window-search state when the same trajectory is republished
-              // at a high rate (otherwise progress can get stuck at ~window/(N-1)).
-              if (!haveLastSig_ || !approxSameTrajSig(sig, lastSig_)) {
-                monitor_->setTrajectory(latestRef_);
-                lastSig_ = sig;
-                haveLastSig_ = true;
-              }
-            }
             // If we entered idle mode due to FINISHED/DIVERGED, only wake up when a new "real"
             // trajectory arrives (ignore the 2-point HOLD trajectory published on intervention).
             if (idle_ && haveRef_ && !is_hold) {
               idle_ = false;
               wake = true;
+              force_reset = true;
+            }
+            if (haveRef_) {
+              // Avoid resetting the window-search state when the same trajectory is republished
+              // at a high rate or only retimed in time (spatial-projection TT).
+              const bool same_sig = haveLastSig_ && approxSameTrajSig(sig, lastSig_);
+              if (force_reset || !same_sig) {
+                monitor_->setTrajectory(latestRef_);
+                lastSig_ = sig;
+                haveLastSig_ = true;
+              } else {
+                monitor_->updateTrajectory(latestRef_);
+              }
             }
           }
           if (wake && timer_) {

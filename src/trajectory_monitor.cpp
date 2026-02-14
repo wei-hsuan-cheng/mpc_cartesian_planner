@@ -15,6 +15,18 @@ void TrajectoryMonitor::setTrajectory(PlannedCartesianTrajectory traj) {
   have_last_update_time_ = false;
 }
 
+void TrajectoryMonitor::updateTrajectory(PlannedCartesianTrajectory traj) {
+  const std::size_t old_last_best = last_best_;
+  traj_ = std::move(traj);
+  if (traj_.empty()) {
+    last_best_ = 0;
+    diverged_accum_ = 0.0;
+    have_last_update_time_ = false;
+    return;
+  }
+  last_best_ = std::min(old_last_best, traj_.size() - 1);
+}
+
 double TrajectoryMonitor::orientationErrorDeg(const Eigen::Quaterniond& q_des,
                                               const Eigen::Quaterniond& q) {
   Eigen::Quaterniond dq = q_des.normalized().conjugate() * q.normalized();

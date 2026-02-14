@@ -10,6 +10,14 @@ trajectory_tt_publisher:
     dt: 0.05
     timeScaling: min_jerk # linear, min_jerk (used by: target_pose, linear_move, screw_move)
 
+    #################### Reference timing ####################
+    # referenceTiming:
+    #   - time: original time-indexed TT (default)
+    #   - spatial_projection: retime trajectory so t_now aligns with the closest spatial waypoint
+    referenceTiming: time
+    projectionWindow: 20
+    projectionMaxBacktrack: 5
+
     #################### poseMoveTarget ####################
     # Move along a straight line in the global frame from the initial EE pose to a specified target pose.
     # [x, y, z] or [x, y, z, thz, thy, thx] or [x, y, z, qw, qx, qy, qz] [m, rad, or unitless]

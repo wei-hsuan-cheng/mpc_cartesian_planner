@@ -43,6 +43,10 @@ class TrajectoryMonitor {
 
   void setTrajectory(PlannedCartesianTrajectory traj);
 
+  // Update the stored trajectory without resetting the window-search state.
+  // Useful when the sample poses are unchanged but their timestamps are retimed.
+  void updateTrajectory(PlannedCartesianTrajectory traj);
+
   TrackingMetrics update(double t_now,
                          const Eigen::Vector3d& p_now,
                          const Eigen::Quaterniond& q_now);

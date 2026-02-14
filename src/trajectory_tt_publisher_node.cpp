@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -161,6 +162,43 @@ inline bool computeEePose(ocs2::PinocchioInterface& pin,
   return true;
 }
 
+inline std::size_t closestWaypointIndexWindow(const PlannedCartesianTrajectory& traj,
+                                              const Eigen::Vector3d& p_now,
+                                              std::size_t last_best,
+                                              bool have_last_best,
+                                              int window,
+                                              int max_backtrack) {
+  if (traj.empty() || traj.position.size() != traj.time.size() || traj.position.size() != traj.quat.size()) {
+    return 0;
+  }
+
+  const int N = static_cast<int>(traj.size());
+  const int k0 = have_last_best ? static_cast<int>(std::min(last_best, traj.size() - 1)) : 0;
+  const int W = std::max(1, window);
+
+  const int k_min = have_last_best ? std::max(0, k0 - W) : 0;
+  const int k_max = have_last_best ? std::min(N - 1, k0 + W) : (N - 1);
+
+  double best_d2 = std::numeric_limits<double>::infinity();
+  int best_k = k0;
+  for (int k = k_min; k <= k_max; ++k) {
+    const auto& pd = traj.position[static_cast<std::size_t>(k)];
+    const double d2 = (p_now - pd).squaredNorm();
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_k = k;
+    }
+  }
+
+  if (have_last_best) {
+    const int mb = std::max(0, max_backtrack);
+    if (best_k + mb < k0) {
+      best_k = k0;
+    }
+  }
+  return static_cast<std::size_t>(best_k);
+}
+
 inline bool sampleTrajectoryAtTime(const PlannedCartesianTrajectory& traj,
                                    double t,
                                    Eigen::Vector3d& p_out,
@@ -221,6 +259,9 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<double>("duration", 2.0);
     this->declare_parameter<double>("dt", 0.05);
     this->declare_parameter<std::string>("timeScaling", std::string("min_jerk"));
+    this->declare_parameter<std::string>("referenceTiming", std::string("time"));
+    this->declare_parameter<int>("projectionWindow", 20);
+    this->declare_parameter<int>("projectionMaxBacktrack", 5);
     this->declare_parameter<double>("amplitude", 0.2);
     this->declare_parameter<double>("frequency", 0.1);
     this->declare_parameter<double>("axisX", 0.0);
@@ -259,6 +300,26 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     duration_ = this->get_parameter("duration").as_double();
     dt_ = this->get_parameter("dt").as_double();
     timeScaling_ = parseTimeScaling(this->get_parameter("timeScaling").as_string());
+    referenceTiming_ = this->get_parameter("referenceTiming").as_string();
+    projectionWindow_ = static_cast<int>(this->get_parameter("projectionWindow").as_int());
+    projectionMaxBacktrack_ = static_cast<int>(this->get_parameter("projectionMaxBacktrack").as_int());
+    projectionWindow_ = std::max(1, projectionWindow_);
+    projectionMaxBacktrack_ = std::max(0, projectionMaxBacktrack_);
+
+    {
+      const std::string mode = toLowerCopy(referenceTiming_);
+      if (mode == "time" || mode == "time_indexed" || mode == "time-indexed") {
+        useSpatialProjectionRetime_ = false;
+      } else if (mode == "spatial_projection" || mode == "spatial" || mode == "path" || mode == "path_based" ||
+                 mode == "path-based" || mode == "pathbased") {
+        useSpatialProjectionRetime_ = true;
+      } else {
+        RCLCPP_WARN(this->get_logger(),
+                    "Unknown referenceTiming='%s'. Falling back to 'time'.",
+                    referenceTiming_.c_str());
+        useSpatialProjectionRetime_ = false;
+      }
+    }
     amplitude_ = this->get_parameter("amplitude").as_double();
     freqHz_ = this->get_parameter("frequency").as_double();
     axis_ = readAxis(*this);
@@ -451,6 +512,9 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
             planner_.reset();
             nominalTraj_ = PlannedCartesianTrajectory{};
             haveNominalTraj_ = false;
+            haveLastProjectionIndex_ = false;
+            lastProjectionIndex_ = 0;
+            warnedMissingFk_ = false;
           }
 
           publishDefaultModeSchedule(wasPaused ? "MANUAL_RESUME" : "MANUAL_ENABLE");
@@ -770,19 +834,55 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
       if (!haveNominalTraj_) return;
     }
 
+    const PlannedCartesianTrajectory* traj_to_pub = &nominalTraj_;
+    PlannedCartesianTrajectory retimed_traj;
+    if (useSpatialProjectionRetime_) {
+      Eigen::Vector3d p_now;
+      Eigen::Quaterniond q_now;
+      bool have_fk = false;
+      if (pin_ && mapping_) {
+        std::lock_guard<std::mutex> lock(pinMtx_);
+        have_fk = computeEePose(*pin_, *mapping_, eeFrameId_, obs.state, p_now, q_now);
+      }
+      if (!have_fk) {
+        if (!warnedMissingFk_) {
+          RCLCPP_WARN(this->get_logger(),
+                      "referenceTiming=spatial_projection requested but Pinocchio FK is not available "
+                      "(set taskFile/urdfFile/libFolder). Falling back to time-indexed reference.");
+          warnedMissingFk_ = true;
+        }
+      } else {
+        const std::size_t closest_idx =
+            closestWaypointIndexWindow(nominalTraj_, p_now,
+                                       lastProjectionIndex_, haveLastProjectionIndex_,
+                                       projectionWindow_, projectionMaxBacktrack_);
+        lastProjectionIndex_ = closest_idx;
+        haveLastProjectionIndex_ = true;
+
+        const double shift = obs.time - nominalTraj_.time[closest_idx];
+        if (std::isfinite(shift)) {
+          retimed_traj = nominalTraj_;
+          for (double& t : retimed_traj.time) {
+            t += shift;
+          }
+          traj_to_pub = &retimed_traj;
+        }
+      }
+    }
+
     if (publishTF_ && tfBroadcaster_) {
       Eigen::Vector3d p;
       Eigen::Quaterniond q;
-      if (sampleTrajectoryAtTime(nominalTraj_, obs.time, p, q)) {
+      if (sampleTrajectoryAtTime(*traj_to_pub, obs.time, p, q)) {
         publishCommandTf(p, q);
       }
     }
 
-    // Publish EE target (high rate). No replanning: always publish the same nominal trajectory (plus viz).
-    trajPub_->publishEeTarget(nominalTraj_, obs);
+    // Publish EE target (high rate). No replanning: publish the nominal samples (optionally retimed).
+    trajPub_->publishEeTarget(*traj_to_pub, obs);
 
     if (publishViz_ && markerPub_ && posePub_) {
-      publishViz(nominalTraj_, obs.time);
+      publishViz(*traj_to_pub, obs.time);
     }
   }
 
@@ -863,6 +963,13 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   Eigen::Vector3d linearMoveEulerZyx_{Eigen::Vector3d::Zero()};
   bool linearMoveOffsetInToolFrame_{false};
   TimeScalingType timeScaling_{TimeScalingType::MinJerk};
+  std::string referenceTiming_{"time"};
+  bool useSpatialProjectionRetime_{false};
+  int projectionWindow_{20};
+  int projectionMaxBacktrack_{5};
+  std::size_t lastProjectionIndex_{0};
+  bool haveLastProjectionIndex_{false};
+  bool warnedMissingFk_{false};
   bool poseMoveHasTarget_{false};
   bool poseMoveHasOrientation_{false};
   Eigen::Vector3d poseMoveTargetP_{Eigen::Vector3d::Zero()};

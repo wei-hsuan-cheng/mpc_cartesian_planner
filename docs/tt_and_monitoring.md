@@ -55,6 +55,78 @@ Each tick:
 
 Note: this package intentionally avoids a *receding-horizon* replanning loop (planning a new horizon each tick), because it makes the monitor’s `progress` stay near zero (the closest waypoint is near the start of the latest horizon). `referenceTiming=spatial_projection` only retimes timestamps (poses unchanged), and the monitor is designed to treat this as the same trajectory (no progress reset).
 
+### 2.4 Reference timing: `time` vs `spatial_projection`
+
+Let the **nominal** planned Cartesian target be a sequence of samples:
+
+$$
+\{(t_k,\;p_k,\;q_k)\}_{k=0}^{N-1}
+$$
+
+where $t_k$ are the timestamps, $p_k \in \mathbb{R}^3$ are positions, and $q_k \in \mathrm{SO}(3)$ are orientations (quaternions in code).
+
+#### `referenceTiming: time` (default)
+
+The TT publisher simply republishes the nominal samples $(t_k,p_k,q_k)$ unchanged. The target that MPC tracks at time $t$ is therefore the nominal target at that absolute time.
+
+#### `referenceTiming: spatial_projection` (path-based retiming)
+
+Goal: make the **reference at the current time** correspond to the robot’s **closest point on the path**, so “being late in time” matters less when the low-level controller introduces delay.
+
+At each publish tick, the TT publisher:
+
+1) Computes the current end-effector pose $(p_{\text{now}}, q_{\text{now}})$ from the latest observation using FK (requires `taskFile`/`urdfFile`/`libFolder`).
+
+2) Finds the closest waypoint index in a **local window** around the previously selected index (to avoid jumping across loops at self-intersections):
+
+Let $k_0$ be the previous closest index (initially 0), window size $W=\texttt{projectionWindow}$, and backtrack guard $b=\texttt{projectionMaxBacktrack}$.
+
+$$
+\mathcal{K} = [\max(0,k_0-W),\; \min(N-1,k_0+W)]
+$$
+
+$$
+k^* = \arg\min_{k \in \mathcal{K}} \|p_{\text{now}} - p_k\|^2
+$$
+
+Monotonic-ish guard:
+
+$$
+k_{\text{best}} =
+\begin{cases}
+k_0, & \text{if } k^* + b < k_0 \\
+k^*, & \text{otherwise}
+\end{cases}
+$$
+
+(Implementation note: the current implementation uses position-only distance for projection; orientation is still taken from the same selected waypoint.)
+
+3) Computes a global time shift $\Delta$ that aligns the selected waypoint’s time to “now”:
+
+$$
+\Delta = t_{\text{now}} - t_{k_{\text{best}}}
+$$
+
+and **retimes** the entire trajectory by shifting all timestamps:
+
+$$
+\tilde{t}_k = t_k + \Delta
+$$
+
+The published target is then:
+
+$$
+\{(\tilde{t}_k,\;p_k,\;q_k)\}_{k=0}^{N-1}
+$$
+
+By construction, $\tilde{t}_{k_{\text{best}}} = t_{\text{now}}$, so the time-indexed target seen by MPC at the current time corresponds to the robot’s closest spatial waypoint (up to the discretization / interpolation scheme).
+
+Practical notes:
+
+- This is **not MPCC** (no new path parameter state $s$ inside MPC); it only changes how the time stamps in `TargetTrajectories` are generated.
+- This mode can make completion time “elastic” (if the robot slows down, the reference schedule slows down with it). If you need a strict pace, you’d add a separate progress-rate rule on top of this.
+- The progress monitor treats “same poses, retimed timestamps” as the same reference (so it doesn’t reset progress every tick).
+
 ## 3) Planner math (Trajectory Types)
 
 The planner interface and output container are:
@@ -70,9 +142,9 @@ The TT publisher selects the planner via the `trajectoryType` parameter (see `co
 ### 3.1 Time discretization
 
 Given:
-- trajectory duration \(T\) (`duration` in `config/tt_params.yaml`, stored as `horizon_T`)
-- step \( \Delta t \) (`dt`)
-- current time \(t_0 = \texttt{obs.time}\)
+- trajectory duration $T$ (`duration` in `config/tt_params.yaml`, stored as `horizon_T`)
+- step $ \Delta t $ (`dt`)
+- current time $t_0 = \texttt{obs.time}$
 
 The code chooses:
 
@@ -85,21 +157,21 @@ See [`src/cartesian_trajectory_planner.cpp#L62`](../src/cartesian_trajectory_pla
 
 ### 3.2 Plane basis from an axis
 
-The trajectory is drawn in a plane whose normal is the user-provided axis \(n\) (`plane_axis`), normalized. The code constructs an orthonormal basis \((u,v)\) spanning the plane using cross products:
+The trajectory is drawn in a plane whose normal is the user-provided axis $n$ (`plane_axis`), normalized. The code constructs an orthonormal basis $(u,v)$ spanning the plane using cross products:
 
 $$
 u = \frac{n \times r}{\|n \times r\|}, \quad v = n \times u
 $$
 
-where \(r\) is a “reference” axis chosen to not be parallel to \(n\). See [`src/cartesian_trajectory_planner.cpp#L39`](../src/cartesian_trajectory_planner.cpp#L39).
+where $r$ is a “reference” axis chosen to not be parallel to $n$. See [`src/cartesian_trajectory_planner.cpp#L39`](../src/cartesian_trajectory_planner.cpp#L39).
 
 ### 3.3 Figure-eight parametric curve
 
 Let:
-- amplitude \(A\) (`amplitude`)
-- frequency \(f\) (`frequency_hz`)
-- angular frequency \(\omega = 2\pi f\)
-- phase time \(\tau = t_k - t_{\text{start}}\) (anchored once at startup)
+- amplitude $A$ (`amplitude`)
+- frequency $f$ (`frequency_hz`)
+- angular frequency $\omega = 2\pi f$
+- phase time $\tau = t_k - t_{\text{start}}$ (anchored once at startup)
 
 The code uses:
 
@@ -134,20 +206,20 @@ $$
 [\Delta x,\;\Delta y,\;\Delta z,\;\theta_z,\;\theta_y,\;\theta_x]
 $$
 
-where \((\theta_z,\theta_y,\theta_x)\) is **ZYX Euler** (applied as \(R_z(\theta_z)R_y(\theta_y)R_x(\theta_x)\)) in radians.
+where $(\theta_z,\theta_y,\theta_x)$ is **ZYX Euler** (applied as $R_z(\theta_z)R_y(\theta_y)R_x(\theta_x)$) in radians.
 
 For backward compatibility, `linearMoveOffset` may also be provided as `[dx, dy, dz]` (rotation assumed zero).
 
 If `linearMoveOffsetInToolFrame: true`, the 6D offset is interpreted as a relative pose in the **initial EE/tool frame**.
 If `linearMoveOffsetInToolFrame: false`, translation is in the **global/base frame** and the rotation is applied about **global/base axes**.
 
-Time is normalized over the total duration \(T\) (`horizon_T`) as:
+Time is normalized over the total duration $T$ (`horizon_T`) as:
 
 $$
 \tau = \mathrm{clamp}\left(\frac{t - t_{\text{start}}}{T},\, 0,\, 1\right)
 $$
 
-and uses a time-scaling \(s(\tau)\) (selected by `timeScaling`):
+and uses a time-scaling $s(\tau)$ (selected by `timeScaling`):
 
 $$
 s(\tau)=
@@ -157,7 +229,7 @@ s(\tau)=
 \end{cases}
 $$
 
-Implementation note: the code first builds a **relative command pose** \(T_{e\rightarrow e_{\text{cmd}}}\) (from the offset parameters, either in tool frame directly or by converting a world-frame goal to a relative pose). It then interpolates in **pos + so(3)** coordinates:
+Implementation note: the code first builds a **relative command pose** $T_{e\rightarrow e_{\text{cmd}}}$ (from the offset parameters, either in tool frame directly or by converting a world-frame goal to a relative pose). It then interpolates in **pos + so(3)** coordinates:
 
 $$
 p_{\text{rel}}(t)=s(\tau)\,\Delta p,\quad
@@ -165,7 +237,7 @@ p_{\text{rel}}(t)=s(\tau)\,\Delta p,\quad
 R_{\text{rel}}(t)=\exp\!\left([\phi(t)]_\times\right)
 $$
 
-where \(\phi_{\text{cmd}}=\log(R_{e\rightarrow e_{\text{cmd}}})\) is the rotation-vector log, and then composes back to an **absolute** target:
+where $\phi_{\text{cmd}}=\log(R_{e\rightarrow e_{\text{cmd}}})$ is the rotation-vector log, and then composes back to an **absolute** target:
 
 $$
 T_{b\rightarrow e}(t)=T_{b\rightarrow e_0}\,T_{\text{rel}}(t)
@@ -175,9 +247,9 @@ See [`src/cartesian_trajectory_planner.cpp#L86`](../src/cartesian_trajectory_pla
 
 ### 3.5 Target pose (time scaling + SLERP)
 
-`TargetPosePlanner` moves from the initial pose \((p_0, q_0)\) to an **absolute** goal pose \((p_1, q_1)\) in the world frame.
+`TargetPosePlanner` moves from the initial pose $(p_0, q_0)$ to an **absolute** goal pose $(p_1, q_1)$ in the world frame.
 
-With the same \(\tau\) and \(s(\tau)\) as above:
+With the same $\tau$ and $s(\tau)$ as above:
 
 $$
 p(t)=p_0+s(\tau)\,(p_1-p_0)
@@ -202,9 +274,9 @@ See [`src/cartesian_trajectory_planner.cpp#L146`](../src/cartesian_trajectory_pl
 `ScrewMovePlanner` generates a relative **screw motion** starting from the current EE pose.
 
 Inputs:
-- axis direction \( \hat{u} \in \mathbb{R}^3 \) (`screwMoveUhat`, normalized)
-- axis-to-EE vector \( r \in \mathbb{R}^3 \) (`screwMoveR`, radius \( \|r\| \))
-- total rotation \( \theta \) (`screwMoveTheta`, radians)
+- axis direction $ \hat{u} \in \mathbb{R}^3 $ (`screwMoveUhat`, normalized)
+- axis-to-EE vector $ r \in \mathbb{R}^3 $ (`screwMoveR`, radius $ \|r\| $)
+- total rotation $ \theta $ (`screwMoveTheta`, radians)
 
 The screw axis (twist) is defined as:
 
@@ -224,7 +296,7 @@ $$
 \end{bmatrix}
 $$
 
-and a time-scaled rotation \(\theta(t)=s(\tau)\,\theta\), the relative transform is:
+and a time-scaled rotation $\theta(t)=s(\tau)\,\theta$, the relative transform is:
 
 $$
 T_{\Delta}(t)=\exp([S]\;\theta(t))
@@ -291,7 +363,7 @@ The core logic is in `TrajectoryMonitor::update()`:
 
 ### 6.1 Windowed nearest-neighbor matching
 
-Let the reference samples be \(\{(t_k, p_k, q_k)\}_{k=0}^{N-1}\). The monitor keeps a previous best index \(k_0\) (`last_best_`) and searches only a window of size \(W\):
+Let the reference samples be $\{(t_k, p_k, q_k)\}_{k=0}^{N-1}$. The monitor keeps a previous best index $k_0$ (`last_best_`) and searches only a window of size $W$:
 
 $$
 \mathcal{K} = [\max(0,k_0-W),\; \min(N-1,k_0+W)]
@@ -313,11 +385,11 @@ $$
 \text{if } k^* + b < k_0 \text{ then } k_{\text{best}} = k_0 \text{ else } k_{\text{best}} = k^*
 $$
 
-where \(b\) is `max_backtrack`. See [`src/trajectory_monitor.cpp#L54`](../src/trajectory_monitor.cpp#L54).
+where $b$ is `max_backtrack`. See [`src/trajectory_monitor.cpp#L54`](../src/trajectory_monitor.cpp#L54).
 
 ### 6.3 Metrics: progress, errors, lag
 
-With \(k_{\text{best}}\) selected:
+With $k_{\text{best}}$ selected:
 
 Progress (normalized index):
 $$
@@ -384,8 +456,8 @@ TT publisher parameters:
 - `publishRate`: publishing frequency (Hz). See [`config/tt_params.yaml#L3`](../config/tt_params.yaml#L3).
 - `commandFrameId`: child frame id for the published command TF. See [`config/tt_params.yaml#L4`](../config/tt_params.yaml#L4).
 - `trajectoryType`: trajectory generator (`figure_eight`, `linear_move`, `target_pose`, or `screw_move`). See [`config/tt_params.yaml#L8`](../config/tt_params.yaml#L8).
-- `duration`: trajectory duration \(T\) (seconds). See [`config/tt_params.yaml#L9`](../config/tt_params.yaml#L9).
-- `dt`: discretization step \(\Delta t\) (seconds). See [`config/tt_params.yaml#L10`](../config/tt_params.yaml#L10).
+- `duration`: trajectory duration $T$ (seconds). See [`config/tt_params.yaml#L9`](../config/tt_params.yaml#L9).
+- `dt`: discretization step $\Delta t$ (seconds). See [`config/tt_params.yaml#L10`](../config/tt_params.yaml#L10).
 - `timeScaling`: time scaling for finite trajectories (`target_pose`, `linear_move`, `screw_move`): `min_jerk` or `linear`. See [`config/tt_params.yaml#L11`](../config/tt_params.yaml#L11).
 - `referenceTiming`: reference timing mode: `time` (default) or `spatial_projection` (retime timestamps so `t_now` aligns with the closest waypoint). See [`config/tt_params.yaml#L17`](../config/tt_params.yaml#L17).
 - `projectionWindow`, `projectionMaxBacktrack`: spatial-projection retiming settings (windowed nearest search + monotonic guard). See [`config/tt_params.yaml#L18`](../config/tt_params.yaml#L18).
@@ -396,8 +468,8 @@ TT publisher parameters:
 - `screwMoveR`: axis->EE vector `r` for `screw_move` (3D vector; `||r||` is radius). See [`config/tt_params.yaml#L42`](../config/tt_params.yaml#L42).
 - `screwMoveTheta`: total rotation `theta` for `screw_move` (radians). See [`config/tt_params.yaml#L45`](../config/tt_params.yaml#L45).
 - `screwMoveInToolFrame`: if `true`, interpret `screwMoveUhat`/`screwMoveR` in the initial EE frame (body-screw). See [`config/tt_params.yaml#L46`](../config/tt_params.yaml#L46).
-- `amplitude`: figure-eight amplitude \(A\) (meters). See [`config/tt_params.yaml#L50`](../config/tt_params.yaml#L50).
-- `frequency`: sinusoid frequency \(f\) (Hz). See [`config/tt_params.yaml#L51`](../config/tt_params.yaml#L51).
+- `amplitude`: figure-eight amplitude $A$ (meters). See [`config/tt_params.yaml#L50`](../config/tt_params.yaml#L50).
+- `frequency`: sinusoid frequency $f$ (Hz). See [`config/tt_params.yaml#L51`](../config/tt_params.yaml#L51).
 - `axisX/Y/Z`: normal vector for the motion plane. See [`config/tt_params.yaml#L52`](../config/tt_params.yaml#L52).
 - `publishZeroBaseCmdOnIntervention`: if `true`, publish a short burst of zero `cmd_vel` when tracking finishes/diverges or when you manually pause TT. See [`config/tt_params.yaml#L61`](../config/tt_params.yaml#L61).
 - `baseCmdTopic`: base `cmd_vel` topic name for the zero-command burst. See [`config/tt_params.yaml#L62`](../config/tt_params.yaml#L62).
@@ -407,8 +479,8 @@ Monitor parameters:
 - `monitorRate`: monitor loop rate (Hz). See [`config/tt_params.yaml#L77`](../config/tt_params.yaml#L77).
 - `publishTF`: if `true`, publish a TF for the closest reference waypoint. See [`config/tt_params.yaml#L78`](../config/tt_params.yaml#L78).
 - `closestFrameId`: child frame id for the closest-waypoint TF. See [`config/tt_params.yaml#L79`](../config/tt_params.yaml#L79).
-- `window`: half-window size \(W\) for local search. See [`config/tt_params.yaml#L80`](../config/tt_params.yaml#L80).
-- `maxBacktrack`: backtrack guard \(b\). See [`config/tt_params.yaml#L81`](../config/tt_params.yaml#L81).
+- `window`: half-window size $W$ for local search. See [`config/tt_params.yaml#L80`](../config/tt_params.yaml#L80).
+- `maxBacktrack`: backtrack guard $b$. See [`config/tt_params.yaml#L81`](../config/tt_params.yaml#L81).
 - `onTrackPos`, `onTrackOriDeg`: “on track” thresholds. See [`config/tt_params.yaml#L83`](../config/tt_params.yaml#L83).
 - `divergedPos`, `divergedHoldSec`: divergence thresholds. See [`config/tt_params.yaml#L86`](../config/tt_params.yaml#L86).
 - `finishProgress`, `finishPos`: finish condition thresholds. See [`config/tt_params.yaml#L89`](../config/tt_params.yaml#L89).

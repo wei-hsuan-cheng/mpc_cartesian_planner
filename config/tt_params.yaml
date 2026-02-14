@@ -6,15 +6,15 @@ trajectory_tt_publisher:
     #################### Trajectory parameters ####################
     # Select the type of trajectory to publish. The parameters below will be used accordingly.
     trajectoryType: screw_move # target_pose, linear_move, screw_move, figure_eight
-    duration: 4.0
-    dt: 0.05
+    duration: 5.0
+    dt: 0.02
     timeScaling: min_jerk # linear, min_jerk (used by: target_pose, linear_move, screw_move)
 
     #################### Reference timing ####################
     # referenceTiming:
     #   - time: original time-indexed TT (default)
     #   - spatial_projection: retime trajectory so t_now aligns with the closest spatial waypoint
-    referenceTiming: time # time, spatial_projection
+    referenceTiming: spatial_projection # time, spatial_projection
     projectionWindow: 20
     projectionMaxBacktrack: 5
 

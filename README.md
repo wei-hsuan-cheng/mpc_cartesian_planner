@@ -63,11 +63,14 @@ This mode needs `taskFile` / `urdfFile` / `libFolder` so the TT publisher can co
 `trajectory_tt_publisher` provides a pause/resume service:
 
 ```bash
+# Start/resume
+ros2 service call /<robotName>/trajectory_tracking/toggle_tt_publisher std_srvs/srv/SetBool "{data: true}"
 # Pause (publish HOLD at current EE pose)
 ros2 service call /<robotName>/trajectory_tracking/toggle_tt_publisher std_srvs/srv/SetBool "{data: false}"
 
-# Resume
-ros2 service call /<robotName>/trajectory_tracking/toggle_tt_publisher std_srvs/srv/SetBool "{data: true}"
+# E.g., for mobile_manipulator
+ros2 service call /mobile_manipulator/trajectory_tracking/toggle_tt_publisher std_srvs/srv/SetBool "{data: true}"
+ros2 service call /mobile_manipulator/trajectory_tracking/toggle_tt_publisher std_srvs/srv/SetBool "{data: false}"
 ```
 
 If `publishModeScheduleOnEnable: true` (default), the TT publisher also publishes `/<robotName>_mode_schedule` (default: mode `1`) on enable/resume so you don't have to manually publish a `ModeSchedule` before activating `mpc_controller`.

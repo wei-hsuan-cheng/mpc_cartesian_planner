@@ -6,7 +6,7 @@ trajectory_tt_publisher:
     #################### Trajectory parameters ####################
     # Select the type of trajectory to publish. The parameters below will be used accordingly.
     trajectoryType: screw_move # target_pose, linear_move, screw_move, figure_eight
-    duration: 20.0
+    duration: 5.0
     dt: 0.02
     timeScaling: min_jerk # linear, min_jerk (used by: target_pose, linear_move, screw_move)
 

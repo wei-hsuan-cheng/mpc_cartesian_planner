@@ -58,6 +58,16 @@ By default, the TT reference is time-indexed (the target at time `t` is fixed on
 
 This mode needs `taskFile` / `urdfFile` / `libFolder` so the TT publisher can compute the current end-effector pose via FK.
 
+## Reactive Delta Pose
+
+You can subscribe a `geometry_msgs/msg/PoseStamped` delta pose and apply it to the nominal TT before publishing:
+
+- `deltaPoseTopic`: source topic (set empty string to disable)
+- `deltaPoseInToolFrame`: if `true`, delta is interpreted in each waypoint's tool frame
+- `deltaPoseTimeout`: if `> 0`, stale deltas older than this timeout are ignored
+
+The defaults are in `config/tt_params.yaml` (example topic: `/admittance_controller/delta_pose`).
+
 ## Pause / Resume
 
 `trajectory_tt_publisher` provides a pause/resume service:

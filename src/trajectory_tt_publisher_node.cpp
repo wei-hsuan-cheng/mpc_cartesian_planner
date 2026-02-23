@@ -37,9 +37,11 @@
 #include <Eigen/Geometry>
 
 #include "rclcpp/rclcpp.hpp"
+#include <rcl/time.h>
 
 #include <controller_manager_msgs/srv/switch_controller.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -281,6 +283,9 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     this->declare_parameter<double>("screwMoveTheta", 1.5707963267948966);  // pi/2
     this->declare_parameter<bool>("screwMoveInToolFrame", true);
     this->declare_parameter<bool>("interveneHoldOnDivergedOrFinished", false);
+    this->declare_parameter<std::string>("deltaPoseTopic", std::string("/delta_pose"));
+    this->declare_parameter<bool>("deltaPoseInToolFrame", true);
+    this->declare_parameter<double>("deltaPoseTimeout", 0.0);
     this->declare_parameter<bool>("publishZeroBaseCmdOnIntervention", false);
     this->declare_parameter<std::string>("baseCmdTopic", std::string("/cmd_vel"));
     this->declare_parameter<int>("zeroBaseCmdBurstCount", 10);
@@ -348,6 +353,9 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     }
     linearMoveOffsetInToolFrame_ = this->get_parameter("linearMoveOffsetInToolFrame").as_bool();
     interveneHoldOnDivergedOrFinished_ = this->get_parameter("interveneHoldOnDivergedOrFinished").as_bool();
+    deltaPoseTopic_ = this->get_parameter("deltaPoseTopic").as_string();
+    deltaPoseInToolFrame_ = this->get_parameter("deltaPoseInToolFrame").as_bool();
+    deltaPoseTimeoutSec_ = this->get_parameter("deltaPoseTimeout").as_double();
     publishZeroBaseCmdOnIntervention_ = this->get_parameter("publishZeroBaseCmdOnIntervention").as_bool();
     baseCmdTopic_ = this->get_parameter("baseCmdTopic").as_string();
     zeroBaseCmdBurstCount_ = static_cast<int>(this->get_parameter("zeroBaseCmdBurstCount").as_int());
@@ -461,6 +469,32 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
     if (switchMpcControllerOnIntervention_ && !controllerManagerSwitchService_.empty()) {
       switchControllerClient_ =
           this->create_client<controller_manager_msgs::srv::SwitchController>(controllerManagerSwitchService_);
+    }
+
+    if (!deltaPoseTopic_.empty()) {
+      deltaPoseSub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+          deltaPoseTopic_, rclcpp::QoS(1).best_effort(),
+          [this](const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {
+            const Eigen::Vector3d dp(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+            const Eigen::Quaterniond dq(msg->pose.orientation.w, msg->pose.orientation.x, msg->pose.orientation.y,
+                                       msg->pose.orientation.z);
+            const Eigen::Quaterniond dq_norm = (dq.norm() < 1e-12) ? Eigen::Quaterniond::Identity() : dq.normalized();
+
+            rclcpp::Time stamp(msg->header.stamp);
+            if (stamp.nanoseconds() == 0) {
+              stamp = this->now();
+            }
+
+            std::lock_guard<std::mutex> lock(deltaPoseMtx_);
+            deltaP_ = dp;
+            deltaQ_ = dq_norm;
+            deltaPoseStamp_ = stamp;
+            haveDeltaPose_ = true;
+          });
+
+      RCLCPP_INFO(this->get_logger(),
+                  "Delta pose subscriber enabled: topic=%s (in_tool_frame=%d timeout=%.3f sec)",
+                  deltaPoseTopic_.c_str(), static_cast<int>(deltaPoseInToolFrame_), deltaPoseTimeoutSec_);
     }
 
     toggleTrackingSrv_ = this->create_service<std_srvs::srv::SetBool>(
@@ -584,6 +618,41 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   }
 
  private:
+  bool getDeltaPose(Eigen::Vector3d& dp, Eigen::Quaterniond& dq, const rclcpp::Time& now) const {
+    std::lock_guard<std::mutex> lock(deltaPoseMtx_);
+    if (!haveDeltaPose_) return false;
+    if (deltaPoseTimeoutSec_ > 0.0) {
+      const double age = (now - deltaPoseStamp_).seconds();
+      if (age > deltaPoseTimeoutSec_) return false;
+    }
+    dp = deltaP_;
+    dq = deltaQ_;
+    return true;
+  }
+
+  void applyDeltaPoseToTrajectory(PlannedCartesianTrajectory& traj) const {
+    if (traj.empty()) return;
+
+    Eigen::Vector3d dp;
+    Eigen::Quaterniond dq;
+    if (!getDeltaPose(dp, dq, this->now())) return;
+
+    if (deltaPoseInToolFrame_) {
+      for (std::size_t i = 0; i < traj.size(); ++i) {
+        const Eigen::Quaterniond q_nom = traj.quat[i].normalized();
+        traj.position[i] = traj.position[i] + q_nom.toRotationMatrix() * dp;
+        traj.quat[i] = (q_nom * dq).normalized();
+      }
+    } else {
+      // Delta is expressed in world frame.
+      for (std::size_t i = 0; i < traj.size(); ++i) {
+        const Eigen::Quaterniond q_nom = traj.quat[i].normalized();
+        traj.position[i] = traj.position[i] + dp;
+        traj.quat[i] = (dq * q_nom).normalized();
+      }
+    }
+  }
+
   void startZeroBaseCmdBurst(const std::string& reason) {
     if (!publishZeroBaseCmdOnIntervention_) return;
     if (baseCmdTopic_.empty()) return;
@@ -834,7 +903,10 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
       if (!haveNominalTraj_) return;
     }
 
-    const PlannedCartesianTrajectory* traj_to_pub = &nominalTraj_;
+    PlannedCartesianTrajectory traj_with_delta = nominalTraj_;
+    applyDeltaPoseToTrajectory(traj_with_delta);
+
+    const PlannedCartesianTrajectory* traj_to_pub = &traj_with_delta;
     PlannedCartesianTrajectory retimed_traj;
     if (useSpatialProjectionRetime_) {
       Eigen::Vector3d p_now;
@@ -853,15 +925,15 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
         }
       } else {
         const std::size_t closest_idx =
-            closestWaypointIndexWindow(nominalTraj_, p_now,
+            closestWaypointIndexWindow(traj_with_delta, p_now,
                                        lastProjectionIndex_, haveLastProjectionIndex_,
                                        projectionWindow_, projectionMaxBacktrack_);
         lastProjectionIndex_ = closest_idx;
         haveLastProjectionIndex_ = true;
 
-        const double shift = obs.time - nominalTraj_.time[closest_idx];
+        const double shift = obs.time - traj_with_delta.time[closest_idx];
         if (std::isfinite(shift)) {
-          retimed_traj = nominalTraj_;
+          retimed_traj = traj_with_delta;
           for (double& t : retimed_traj.time) {
             t += shift;
           }
@@ -979,6 +1051,9 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   double screwMoveTheta_{1.5707963267948966};
   bool screwMoveInToolFrame_{true};
   bool interveneHoldOnDivergedOrFinished_{false};
+  std::string deltaPoseTopic_{"/delta_pose"};
+  bool deltaPoseInToolFrame_{true};
+  double deltaPoseTimeoutSec_{0.0};
   bool publishZeroBaseCmdOnIntervention_{false};
   std::string baseCmdTopic_{"/cmd_vel"};
   int zeroBaseCmdBurstCount_{10};
@@ -1019,8 +1094,15 @@ class TrajectoryTTPublisherNode final : public rclcpp::Node {
   std::shared_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster_;
   rclcpp::Subscription<ocs2_msgs::msg::MpcObservation>::SharedPtr obsSub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trackingStatusSub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr deltaPoseSub_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr zeroBaseCmdTimer_;
+
+  mutable std::mutex deltaPoseMtx_;
+  bool haveDeltaPose_{false};
+  Eigen::Vector3d deltaP_{Eigen::Vector3d::Zero()};
+  Eigen::Quaterniond deltaQ_{Eigen::Quaterniond::Identity()};
+  rclcpp::Time deltaPoseStamp_{0, 0, RCL_ROS_TIME};
 
   std::mutex mtx_;
   SystemObservation latestObs_;

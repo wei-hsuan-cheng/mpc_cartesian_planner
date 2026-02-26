@@ -20,7 +20,7 @@ from geometry_msgs.msg import PoseStamped
 # - This is a quick test tool, so CLI args are intentionally omitted.
 # - The TT publisher consumes this as a delta pose (not an absolute pose).
 
-TOPIC = "/admittance_controller/delta_pose"
+TOPIC = "/admittance_controller/delta_pose_cmd"
 FRAME_ID = "ur_arm_tool0"
 RATE_HZ = 100.0
 

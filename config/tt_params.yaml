@@ -56,7 +56,7 @@ trajectory_tt_publisher:
     #################### Reactive delta pose ####################
     # Subscribe a reactive delta pose (PoseStamped) and add it to the nominal planned trajectory before publishing.
     # Leave topic empty ("") to disable.
-    deltaPoseTopic: "/admittance_controller/delta_pose"
+    deltaPoseTopic: "/admittance_controller/delta_pose_cmd"
     deltaPoseInToolFrame: true
     deltaPoseTimeout: 0.5 # [sec] 0.0 -> never timeout (use last received delta forever)
 

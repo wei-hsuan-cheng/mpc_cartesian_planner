@@ -15,7 +15,7 @@ trajectory_tt_publisher:
     #   - time: original time-indexed TT (default)
     #   - spatial_projection: retime trajectory so t_now aligns with the closest spatial waypoint
     referenceTiming: time # time, spatial_projection
-    projectionWindow: 20
+    projectionWindow: 250
     projectionMaxBacktrack: 5
 
     #################### poseMoveTarget ####################

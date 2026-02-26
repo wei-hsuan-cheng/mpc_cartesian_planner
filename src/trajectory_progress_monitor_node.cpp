@@ -124,6 +124,8 @@ inline bool isHoldTrajectory(const PlannedCartesianTrajectory& traj) {
 
 struct TrajSignature {
   std::size_t N = 0;
+  double t0 = 0.0;
+  double tN = 0.0;
   Eigen::Vector3d p0{Eigen::Vector3d::Zero()};
   Eigen::Vector3d pMid{Eigen::Vector3d::Zero()};
   Eigen::Vector3d pN{Eigen::Vector3d::Zero()};
@@ -137,6 +139,8 @@ inline TrajSignature signatureFromTraj(const PlannedCartesianTrajectory& traj) {
   s.N = traj.size();
   if (traj.empty()) return s;
   const std::size_t mid = s.N / 2;
+  s.t0 = traj.time.front();
+  s.tN = traj.time.back();
   s.p0 = traj.position.front();
   s.pMid = traj.position[mid];
   s.pN = traj.position.back();
@@ -146,22 +150,32 @@ inline TrajSignature signatureFromTraj(const PlannedCartesianTrajectory& traj) {
   return s;
 }
 
-inline bool approxSameTrajSig(const TrajSignature& a, const TrajSignature& b) {
+inline bool approxSameTrajSig(const TrajSignature& a, const TrajSignature& b,
+                              double pos_tol_m,
+                              double ori_tol_deg,
+                              double time_tol_sec) {
   if (a.N != b.N) return false;
   if (a.N == 0) return true;
 
-  constexpr double kPosEps = 1e-6;
-  constexpr double kQuatDotEps = 1e-9;
+  const double pos_tol = std::max(0.0, pos_tol_m);
+  const double time_tol = std::max(0.0, time_tol_sec);
+  const double ori_tol_rad = std::max(0.0, ori_tol_deg) * M_PI / 180.0;
 
-  if ((a.p0 - b.p0).norm() > kPosEps) return false;
-  if ((a.pMid - b.pMid).norm() > kPosEps) return false;
-  if ((a.pN - b.pN).norm() > kPosEps) return false;
+  if (time_tol > 0.0) {
+    if (std::abs(a.t0 - b.t0) > time_tol) return false;
+    if (std::abs(a.tN - b.tN) > time_tol) return false;
+  }
 
-  auto sameQuat = [](Eigen::Quaterniond qa, Eigen::Quaterniond qb) {
+  if ((a.p0 - b.p0).norm() > pos_tol) return false;
+  if ((a.pMid - b.pMid).norm() > pos_tol) return false;
+  if ((a.pN - b.pN).norm() > pos_tol) return false;
+
+  auto sameQuat = [ori_tol_rad](Eigen::Quaterniond qa, Eigen::Quaterniond qb) {
     qa.normalize();
     qb.normalize();
-    const double d = std::abs(qa.dot(qb));
-    return (1.0 - d) <= kQuatDotEps;
+    const double d = std::clamp(std::abs(qa.dot(qb)), 0.0, 1.0);
+    const double ang = 2.0 * std::acos(d);
+    return ang <= ori_tol_rad;
   };
   if (!sameQuat(a.q0, b.q0)) return false;
   if (!sameQuat(a.qMid, b.qMid)) return false;
@@ -190,6 +204,18 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
     this->declare_parameter<bool>("publishTF", false);
     this->declare_parameter<std::string>("closestFrameId", std::string("command_closest"));
 
+    // Trajectory signature tolerances (used to decide whether an incoming target trajectory is
+    // "the same trajectory" being republished/updated, or a genuinely new trajectory that should
+    // reset the window-search state).
+    //
+    // Motivation: reactive delta poses can update the published sample poses every tick; this
+    // should typically be treated as an update (keep last_best_) rather than a hard reset.
+    this->declare_parameter<double>("trajectorySignaturePosTol", 0.05);      // [m]
+    this->declare_parameter<double>("trajectorySignatureOriTolDeg", 10.0);   // [deg]
+    // Note: keep time tol at 0 by default so spatial-projection retiming (which shifts timestamps)
+    // does not accidentally look like a "new trajectory".
+    this->declare_parameter<double>("trajectorySignatureTimeTolSec", 0.0);   // [sec] 0 -> ignore time
+
     // Monitor params (match config/tt_params.yaml)
     this->declare_parameter<int>("window", 20);
     this->declare_parameter<int>("maxBacktrack", 5);
@@ -216,6 +242,10 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
     if (publishTF_) {
       tfBroadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
     }
+
+    trajSigPosTol_ = this->get_parameter("trajectorySignaturePosTol").as_double();
+    trajSigOriTolDeg_ = this->get_parameter("trajectorySignatureOriTolDeg").as_double();
+    trajSigTimeTolSec_ = this->get_parameter("trajectorySignatureTimeTolSec").as_double();
 
     MonitorParams mp;
     mp.window = this->get_parameter("window").as_int();
@@ -275,6 +305,7 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
           const auto sig = signatureFromTraj(traj);
           bool wake = false;
           bool force_reset = false;
+          bool update_monitor = true;
           {
             std::lock_guard<std::mutex> lock(mtx_);
             latestRef_ = traj;
@@ -282,23 +313,46 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
                 !traj.empty() &&
                 traj.time.size() == traj.position.size() &&
                 traj.time.size() == traj.quat.size();
+
+            if (idle_) {
+              // While idling after FINISHED/DIVERGED, ignore HOLD trajectories and also ignore
+              // late in-flight duplicates of the finished trajectory. Only wake up for a new
+              // non-HOLD trajectory that differs (beyond tolerance) from the trajectory that
+              // triggered idle mode.
+              if (!haveRef_ || is_hold) {
+                update_monitor = false;
+              } else {
+                const bool same_as_idle =
+                    haveIdleSig_ && approxSameTrajSig(sig, idleSig_,
+                                                     trajSigPosTol_, trajSigOriTolDeg_, trajSigTimeTolSec_);
+                if (same_as_idle) {
+                  update_monitor = false;
+                } else {
+                  idle_ = false;
+                  haveIdleSig_ = false;
+                  wake = true;
+                  force_reset = true;
+                }
+              }
+            }
+
             // If we entered idle mode due to FINISHED/DIVERGED, only wake up when a new "real"
             // trajectory arrives (ignore the 2-point HOLD trajectory published on intervention).
-            if (idle_ && haveRef_ && !is_hold) {
-              idle_ = false;
-              wake = true;
-              force_reset = true;
-            }
-            if (haveRef_) {
+            if (haveRef_ && update_monitor) {
               // Avoid resetting the window-search state when the same trajectory is republished
               // at a high rate or only retimed in time (spatial-projection TT).
-              const bool same_sig = haveLastSig_ && approxSameTrajSig(sig, lastSig_);
+              const bool same_sig =
+                  haveLastSig_ && approxSameTrajSig(sig, lastSig_,
+                                                   trajSigPosTol_, trajSigOriTolDeg_, trajSigTimeTolSec_);
               if (force_reset || !same_sig) {
                 monitor_->setTrajectory(latestRef_);
                 lastSig_ = sig;
                 haveLastSig_ = true;
               } else {
                 monitor_->updateTrajectory(latestRef_);
+                // Keep the signature in sync so slow/continuous trajectory updates (e.g., delta_pose)
+                // don't accumulate drift relative to an old reference and trigger unnecessary resets.
+                lastSig_ = sig;
               }
             }
           }
@@ -371,6 +425,9 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
     SystemObservation obs;
     {
       std::lock_guard<std::mutex> lock(mtx_);
+      if (idle_) {
+        return;
+      }
       if (!haveObs_ || !haveRef_) {
         clearClosestWaypointMarker();
         return;
@@ -407,6 +464,8 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
       const bool terminal = (met.status == TrackingStatus::FINISHED) || (met.status == TrackingStatus::DIVERGED);
       if (terminal && !idle_) {
         idle_ = true;
+        idleSig_ = signatureFromTraj(latestRef_);
+        haveIdleSig_ = true;
         enter_idle = true;
       }
     }
@@ -493,6 +552,13 @@ class TrajectoryProgressMonitorNode final : public rclcpp::Node {
 
   TrajSignature lastSig_;
   bool haveLastSig_{false};
+
+  TrajSignature idleSig_;
+  bool haveIdleSig_{false};
+
+  double trajSigPosTol_{0.05};
+  double trajSigOriTolDeg_{10.0};
+  double trajSigTimeTolSec_{0.0};
 };
 
 }  // namespace mpc_cartesian_planner

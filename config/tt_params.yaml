@@ -38,12 +38,17 @@ trajectory_tt_publisher:
     # r: axis->EE vector represented in EE frame (||r|| is the radius) [m]
     # theta: screw angle about the axis [rad]
     # S = [r x u_hat; u_hat] is the (body-)screw axis in se(3) represented in EE frame
+    
+    screwMoveInToolFrame: true
     screwMoveUhat: [0.0, 1.0, 0.0]
     screwMoveR: [-0.2, 0.0, 0.0]
-    # screwMoveUhat: [0.0, 0.0, 1.0]
-    # screwMoveR: [0.05, 0.0, 0.0]
-    screwMoveTheta: 1.57079632679 # +pi/2
-    screwMoveInToolFrame: true
+    screwMoveTheta: 0.7854 # pi/4
+
+    # screwMoveInToolFrame: false
+    # screwMoveUhat: [0.0, 0.0, -1.0]
+    # screwMoveR: [-0.5, 0.5, 0.0]
+    # screwMoveTheta: 0.7854 # pi/4
+    
 
     #################### figure_eight ####################
     # Figure-eight trajectory in a plane.
@@ -77,6 +82,31 @@ trajectory_tt_publisher:
 
     # Optional: publish a default OCS2 ModeSchedule before enabling MPC (so you don't have to manually `ros2 topic pub`).
     publishModeScheduleOnEnable: true
+    modeScheduleMode: 1
+
+trajectory_tt_action_server:
+  ros__parameters:
+    publishRate: 100.0
+    commandFrameId: command
+    referenceTiming: time # time, spatial_projection
+    projectionWindow: 250
+    projectionMaxBacktrack: 5
+    publishViz: true
+    publishTF: true
+
+    interveneHoldOnDivergedOrFinished: true
+
+    publishZeroBaseCmdOnIntervention: true
+    baseCmdTopic: "/cmd_vel"
+    zeroBaseCmdBurstCount: 10
+    zeroBaseCmdBurstRate: 50.0
+
+    switchMpcControllerOnIntervention: false
+    activateMpcControllerOnGoal: false
+    controllerManagerSwitchService: "/controller_manager/switch_controller"
+    mpcControllerName: "mpc_controller"
+
+    publishModeScheduleOnGoal: true
     modeScheduleMode: 1
 
 trajectory_progress_monitor:

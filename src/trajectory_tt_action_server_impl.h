@@ -13,6 +13,7 @@
 
 #include <controller_manager_msgs/srv/switch_controller.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -74,6 +75,8 @@ class TrajectoryTTActionServerNode final : public rclcpp::Node {
                              const std::string& message,
                              const MonitorSnapshot& snapshot);
   static uint32_t saturateClosestIndex(std::size_t index);
+  bool getDeltaPose(Eigen::Vector3d& dp, Eigen::Quaterniond& dq, const rclcpp::Time& now) const;
+  void applyDeltaPoseToTrajectory(PlannedCartesianTrajectory& traj) const;
   void publishHoldTrajectory(const std::string& reason);
   void startZeroBaseCmdBurst(const std::string& reason);
   void requestSwitchMpcController(bool activate, const std::string& reason);
@@ -96,6 +99,9 @@ class TrajectoryTTActionServerNode final : public rclcpp::Node {
   bool publishViz_{true};
   bool publishTF_{true};
   std::string commandFrameId_{"command"};
+  std::string deltaPoseTopic_{"/delta_pose"};
+  bool deltaPoseInToolFrame_{true};
+  double deltaPoseTimeoutSec_{0.0};
   bool interveneHoldOnDivergedOrFinished_{false};
   bool publishZeroBaseCmdOnIntervention_{false};
   std::string baseCmdTopic_{"/cmd_vel"};
@@ -124,6 +130,7 @@ class TrajectoryTTActionServerNode final : public rclcpp::Node {
   rclcpp::Subscription<ocs2_msgs::msg::MpcObservation>::SharedPtr obsSub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trackingStatusSub_;
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr trackingMetricSub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr deltaPoseSub_;
   rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switchControllerClient_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr zeroBaseCmdTimer_;
@@ -151,6 +158,11 @@ class TrajectoryTTActionServerNode final : public rclcpp::Node {
   MonitorSnapshot monitorSnapshot_;
 
   std::mutex pinMtx_;
+  mutable std::mutex deltaPoseMtx_;
+  bool haveDeltaPose_{false};
+  Eigen::Vector3d deltaP_{Eigen::Vector3d::Zero()};
+  Eigen::Quaterniond deltaQ_{Eigen::Quaterniond::Identity()};
+  rclcpp::Time deltaPoseStamp_{0, 0, RCL_ROS_TIME};
   std::mutex waitingFeedbackMtx_;
   rclcpp::Time lastWaitingFeedbackTime_{0, 0, RCL_ROS_TIME};
 };

@@ -63,7 +63,7 @@ trajectory_tt_publisher:
     # Leave topic empty ("") to disable.
     deltaPoseTopic: "/admittance_controller/delta_pose_cmd"
     deltaPoseInToolFrame: true
-    deltaPoseTimeout: 0.5 # [sec] 0.0 -> never timeout (use last received delta forever)
+    deltaPoseTimeout: 0.0 # [sec] 0.0 -> never timeout (use last received delta forever)
 
     #################### Intervention and mode schedule/switching settings ####################
     # Intervention: on DIVERGED or FINISHED, publish a HOLD target at the current EE pose and stop TT publishing.
@@ -88,24 +88,43 @@ trajectory_tt_action_server:
   ros__parameters:
     publishRate: 100.0
     commandFrameId: command
+
+    #################### Reference timing ####################
+    # referenceTiming:
+    #   - time: original time-indexed TT (default)
+    #   - spatial_projection: retime trajectory so t_now aligns with the closest spatial waypoint
     referenceTiming: time # time, spatial_projection
     projectionWindow: 250
     projectionMaxBacktrack: 5
+
+    #################### Visualization settings ####################
     publishViz: true
     publishTF: true
 
+    #################### Reactive delta pose ####################
+    # Subscribe a reactive delta pose (PoseStamped) and add it to the nominal planned trajectory before publishing.
+    # Leave topic empty ("") to disable.
+    deltaPoseTopic: "/admittance_controller/delta_pose_cmd"
+    deltaPoseInToolFrame: true
+    deltaPoseTimeout: 0.0 # [sec] 0.0 -> never timeout (use last received delta forever)
+
+    #################### Intervention and mode schedule/switching settings ####################
+    # Intervention: on DIVERGED or FINISHED, publish a HOLD target at the current EE pose and stop TT publishing.
     interveneHoldOnDivergedOrFinished: true
 
+    # Optional safety: publish a short burst of zero base cmd_vel on intervention/pause (no use in arm-only mode, but required for mobile manipulator).
     publishZeroBaseCmdOnIntervention: true
     baseCmdTopic: "/cmd_vel"
     zeroBaseCmdBurstCount: 10
     zeroBaseCmdBurstRate: 50.0
 
+    # Optional: also switch the ros2_control controller on intervention/pause/resume via controller_manager.
     switchMpcControllerOnIntervention: false
     activateMpcControllerOnGoal: false
     controllerManagerSwitchService: "/controller_manager/switch_controller"
     mpcControllerName: "mpc_controller"
 
+    # Optional: publish a default OCS2 ModeSchedule before enabling MPC (so you don't have to manually `ros2 topic pub`).
     publishModeScheduleOnGoal: true
     modeScheduleMode: 1
 

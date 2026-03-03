@@ -48,6 +48,9 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
   this->declare_parameter<bool>("publishViz", true);
   this->declare_parameter<bool>("publishTF", true);
   this->declare_parameter<std::string>("commandFrameId", std::string("command"));
+  this->declare_parameter<std::string>("deltaPoseTopic", std::string("/delta_pose"));
+  this->declare_parameter<bool>("deltaPoseInToolFrame", true);
+  this->declare_parameter<double>("deltaPoseTimeout", 0.0);
   this->declare_parameter<bool>("interveneHoldOnDivergedOrFinished", false);
   this->declare_parameter<bool>("publishZeroBaseCmdOnIntervention", false);
   this->declare_parameter<std::string>("baseCmdTopic", std::string("/cmd_vel"));
@@ -81,6 +84,9 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
   publishTF_ = this->get_parameter("publishTF").as_bool();
   commandFrameId_ = this->get_parameter("commandFrameId").as_string();
   if (commandFrameId_.empty()) commandFrameId_ = "command";
+  deltaPoseTopic_ = this->get_parameter("deltaPoseTopic").as_string();
+  deltaPoseInToolFrame_ = this->get_parameter("deltaPoseInToolFrame").as_bool();
+  deltaPoseTimeoutSec_ = this->get_parameter("deltaPoseTimeout").as_double();
   interveneHoldOnDivergedOrFinished_ = this->get_parameter("interveneHoldOnDivergedOrFinished").as_bool();
   publishZeroBaseCmdOnIntervention_ = this->get_parameter("publishZeroBaseCmdOnIntervention").as_bool();
   baseCmdTopic_ = this->get_parameter("baseCmdTopic").as_string();
@@ -139,6 +145,32 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
   if ((switchMpcControllerOnIntervention_ || activateMpcControllerOnGoal_) && !controllerManagerSwitchService_.empty()) {
     switchControllerClient_ =
         this->create_client<controller_manager_msgs::srv::SwitchController>(controllerManagerSwitchService_);
+  }
+
+  if (!deltaPoseTopic_.empty()) {
+    deltaPoseSub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+        deltaPoseTopic_, rclcpp::QoS(1).best_effort(),
+        [this](const geometry_msgs::msg::PoseStamped::ConstSharedPtr msg) {
+          const Eigen::Vector3d dp(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+          const Eigen::Quaterniond dq(msg->pose.orientation.w, msg->pose.orientation.x, msg->pose.orientation.y,
+                                      msg->pose.orientation.z);
+          const Eigen::Quaterniond dq_norm = (dq.norm() < 1e-12) ? Eigen::Quaterniond::Identity() : dq.normalized();
+
+          rclcpp::Time stamp(msg->header.stamp);
+          if (stamp.nanoseconds() == 0) {
+            stamp = this->now();
+          }
+
+          std::lock_guard<std::mutex> lock(deltaPoseMtx_);
+          deltaP_ = dp;
+          deltaQ_ = dq_norm;
+          deltaPoseStamp_ = stamp;
+          haveDeltaPose_ = true;
+        });
+
+    RCLCPP_INFO(this->get_logger(),
+                "Delta pose subscriber enabled: topic=%s (in_tool_frame=%d timeout=%.3f sec)",
+                deltaPoseTopic_.c_str(), static_cast<int>(deltaPoseInToolFrame_), deltaPoseTimeoutSec_);
   }
 
   obsSub_ = this->create_subscription<ocs2_msgs::msg::MpcObservation>(
@@ -270,7 +302,10 @@ void TrajectoryTTActionServerNode::onTimer() {
     nominal_traj = nominalTraj_;
   }
 
-  const PlannedCartesianTrajectory* traj_to_pub = &nominal_traj;
+  PlannedCartesianTrajectory traj_with_delta = nominal_traj;
+  applyDeltaPoseToTrajectory(traj_with_delta);
+
+  const PlannedCartesianTrajectory* traj_to_pub = &traj_with_delta;
   PlannedCartesianTrajectory retimed_traj;
   if (useSpatialProjectionRetime_) {
     Eigen::Vector3d p_now;
@@ -299,14 +334,14 @@ void TrajectoryTTActionServerNode::onTimer() {
       {
         std::lock_guard<std::mutex> lock(stateMtx_);
         closest_idx = closestWaypointIndexWindow(
-            nominal_traj, p_now, lastProjectionIndex_, haveLastProjectionIndex_, projectionWindow_, projectionMaxBacktrack_);
+            traj_with_delta, p_now, lastProjectionIndex_, haveLastProjectionIndex_, projectionWindow_, projectionMaxBacktrack_);
         lastProjectionIndex_ = closest_idx;
         haveLastProjectionIndex_ = true;
       }
 
-      const double shift = obs.time - nominal_traj.time[closest_idx];
+      const double shift = obs.time - traj_with_delta.time[closest_idx];
       if (std::isfinite(shift)) {
-        retimed_traj = nominal_traj;
+        retimed_traj = traj_with_delta;
         for (double& t : retimed_traj.time) {
           t += shift;
         }

@@ -290,6 +290,41 @@ uint32_t TrajectoryTTActionServerNode::saturateClosestIndex(std::size_t index) {
   return static_cast<uint32_t>(std::min<std::size_t>(index, std::numeric_limits<uint32_t>::max()));
 }
 
+bool TrajectoryTTActionServerNode::getDeltaPose(Eigen::Vector3d& dp, Eigen::Quaterniond& dq, const rclcpp::Time& now) const {
+  std::lock_guard<std::mutex> lock(deltaPoseMtx_);
+  if (!haveDeltaPose_) return false;
+  if (deltaPoseTimeoutSec_ > 0.0) {
+    const double age = (now - deltaPoseStamp_).seconds();
+    if (age > deltaPoseTimeoutSec_) return false;
+  }
+  dp = deltaP_;
+  dq = deltaQ_;
+  return true;
+}
+
+void TrajectoryTTActionServerNode::applyDeltaPoseToTrajectory(PlannedCartesianTrajectory& traj) const {
+  if (traj.empty()) return;
+
+  Eigen::Vector3d dp;
+  Eigen::Quaterniond dq;
+  if (!getDeltaPose(dp, dq, this->now())) return;
+
+  if (deltaPoseInToolFrame_) {
+    for (std::size_t i = 0; i < traj.size(); ++i) {
+      const Eigen::Quaterniond q_nom = traj.quat[i].normalized();
+      traj.position[i] = traj.position[i] + q_nom.toRotationMatrix() * dp;
+      traj.quat[i] = (q_nom * dq).normalized();
+    }
+  } else {
+    // Delta is expressed in world frame.
+    for (std::size_t i = 0; i < traj.size(); ++i) {
+      const Eigen::Quaterniond q_nom = traj.quat[i].normalized();
+      traj.position[i] = traj.position[i] + dp;
+      traj.quat[i] = (dq * q_nom).normalized();
+    }
+  }
+}
+
 void TrajectoryTTActionServerNode::publishHoldTrajectory(const std::string& reason) {
   if (!trajPub_) return;
 

@@ -141,7 +141,7 @@ ros2 action send_goal \
 ## Combined EE/base trajectory tracking action examples:
 
 ```bash
-# 1) Pure EE TT
+# 1) Pure EE TT: unchanged
 ros2 action send_goal \
   /mobile_manipulator/trajectory_tracking/execute_target_pose \
   mpc_cartesian_planner/action/ExecuteTargetPose \
@@ -180,7 +180,26 @@ ros2 action send_goal \
     base_linear_move_in_body_frame: true
   }"
 
-# 4) Fixed EE in space while base moves
+# 4) Pure base screw/arc move
+ros2 action send_goal \
+  /mobile_manipulator/trajectory_tracking/execute_combined_screw_move \
+  mpc_cartesian_planner/action/ExecuteCombinedScrewMove \
+  "{
+    duration: 20.0,
+    dt: 0.1,
+    time_scaling: min_jerk,
+    enable_ee: false, hold_ee: false,
+    ee_screw_uhat: [0.0, 0.0, 1.0],
+    ee_screw_r: [0.0, 0.0, 0.0],
+    ee_screw_theta: 0.0,
+    ee_screw_in_tool_frame: true,
+    enable_base: true, hold_base: false,
+    base_screw_r: [0.0, -0.5],
+    base_screw_theta: 6.28,
+    base_screw_in_body_frame: true
+  }"
+
+# 5) Fixed EE in space while base moves
 ros2 action send_goal \
   /mobile_manipulator/trajectory_tracking/execute_combined_linear_move \
   mpc_cartesian_planner/action/ExecuteCombinedLinearMove \
@@ -195,7 +214,7 @@ ros2 action send_goal \
     base_linear_move_in_body_frame: true
   }"
 
-# 5) EE + base combined target pose
+# 6) EE + base combined target pose
 ros2 action send_goal \
   /mobile_manipulator/trajectory_tracking/execute_combined_target_pose \
   mpc_cartesian_planner/action/ExecuteCombinedTargetPose \
@@ -207,24 +226,5 @@ ros2 action send_goal \
     ee_target_pose: [0.55, -0.05, 0.68, 0.707, 0.0, 0.0, -0.707],
     enable_base: true, hold_base: false,
     base_target_pose: [0.8, -0.2, 0.7854]
-  }"
-
-# 6) Pure base screw/arc move
-ros2 action send_goal \
-  /mobile_manipulator/trajectory_tracking/execute_combined_screw_move \
-  mpc_cartesian_planner/action/ExecuteCombinedScrewMove \
-  "{
-    duration: 5.0,
-    dt: 0.02,
-    time_scaling: min_jerk,
-    enable_ee: false, hold_ee: false,
-    ee_screw_uhat: [0.0, 0.0, 1.0],
-    ee_screw_r: [0.0, 0.0, 0.0],
-    ee_screw_theta: 0.0,
-    ee_screw_in_tool_frame: true,
-    enable_base: true, hold_base: false,
-    base_screw_r: [0.0, -0.5],
-    base_screw_theta: 1.5708,
-    base_screw_in_body_frame: true
   }"
 ```

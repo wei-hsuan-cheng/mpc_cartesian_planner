@@ -53,6 +53,9 @@ endif()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/ExecuteScrewMove.action"
+  "action/ExecuteLinearMove.action"
+  "action/ExecuteTargetPose.action"
+  "action/ExecuteFigureEight.action"
   DEPENDENCIES action_msgs
 )
 

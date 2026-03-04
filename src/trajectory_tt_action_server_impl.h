@@ -30,51 +30,96 @@
 
 #include <ocs2_pinocchio_interface/PinocchioInterface.h>
 
+#include "mpc_cartesian_planner/action/execute_figure_eight.hpp"
+#include "mpc_cartesian_planner/action/execute_linear_move.hpp"
 #include "mpc_cartesian_planner/action/execute_screw_move.hpp"
+#include "mpc_cartesian_planner/action/execute_target_pose.hpp"
 #include "mpc_cartesian_planner/cartesian_trajectory_planner.h"
 #include "mpc_cartesian_planner/trajectory_publisher.h"
 #include "trajectory_tt_action_server_internal.h"
 
 namespace mpc_cartesian_planner {
 
-class TrajectoryTTActionServerNode final : public rclcpp::Node {
+class ActiveGoalBase {
  public:
-  using ExecuteScrewMove = mpc_cartesian_planner::action::ExecuteScrewMove;
-  using GoalHandleExecuteScrewMove = rclcpp_action::ServerGoalHandle<ExecuteScrewMove>;
   using GoalConfig = trajectory_tt_action_server_internal::GoalConfig;
   using GoalTermination = trajectory_tt_action_server_internal::GoalTermination;
   using MonitorSnapshot = trajectory_tt_action_server_internal::MonitorSnapshot;
 
+  virtual ~ActiveGoalBase() = default;
+  virtual const GoalConfig& goalConfig() const = 0;
+  virtual bool isCanceling() const = 0;
+  virtual bool matchesHandle(const void* native_handle) const = 0;
+  virtual void publishWaitingFeedback(const std::string& status) = 0;
+  virtual void publishFeedback(const MonitorSnapshot& snapshot) = 0;
+  virtual void finish(GoalTermination termination,
+                      const std::string& final_status,
+                      const std::string& message,
+                      const MonitorSnapshot& snapshot) = 0;
+};
+
+class TrajectoryTTActionServerNode final : public rclcpp::Node {
+ public:
+  using ExecuteScrewMove = mpc_cartesian_planner::action::ExecuteScrewMove;
+  using GoalHandleExecuteScrewMove = rclcpp_action::ServerGoalHandle<ExecuteScrewMove>;
+  using ExecuteLinearMove = mpc_cartesian_planner::action::ExecuteLinearMove;
+  using GoalHandleExecuteLinearMove = rclcpp_action::ServerGoalHandle<ExecuteLinearMove>;
+  using ExecuteTargetPose = mpc_cartesian_planner::action::ExecuteTargetPose;
+  using GoalHandleExecuteTargetPose = rclcpp_action::ServerGoalHandle<ExecuteTargetPose>;
+  using ExecuteFigureEight = mpc_cartesian_planner::action::ExecuteFigureEight;
+  using GoalHandleExecuteFigureEight = rclcpp_action::ServerGoalHandle<ExecuteFigureEight>;
+  using GoalConfig = trajectory_tt_action_server_internal::GoalConfig;
+  using GoalTermination = trajectory_tt_action_server_internal::GoalTermination;
+  using MonitorSnapshot = trajectory_tt_action_server_internal::MonitorSnapshot;
+  using ActiveGoalPtr = std::shared_ptr<ActiveGoalBase>;
+
   explicit TrajectoryTTActionServerNode(const rclcpp::NodeOptions& options);
 
  private:
-  rclcpp_action::GoalResponse handleGoal(
+  rclcpp_action::GoalResponse handleScrewGoal(
       const rclcpp_action::GoalUUID& uuid,
       std::shared_ptr<const ExecuteScrewMove::Goal> goal);
-  rclcpp_action::CancelResponse handleCancel(const std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle);
-  void handleAccepted(const std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle);
+  rclcpp_action::GoalResponse handleLinearGoal(
+      const rclcpp_action::GoalUUID& uuid,
+      std::shared_ptr<const ExecuteLinearMove::Goal> goal);
+  rclcpp_action::GoalResponse handleTargetPoseGoal(
+      const rclcpp_action::GoalUUID& uuid,
+      std::shared_ptr<const ExecuteTargetPose::Goal> goal);
+  rclcpp_action::GoalResponse handleFigureEightGoal(
+      const rclcpp_action::GoalUUID& uuid,
+      std::shared_ptr<const ExecuteFigureEight::Goal> goal);
+  rclcpp_action::CancelResponse handleScrewCancel(const std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle);
+  rclcpp_action::CancelResponse handleLinearCancel(const std::shared_ptr<GoalHandleExecuteLinearMove> goal_handle);
+  rclcpp_action::CancelResponse handleTargetPoseCancel(const std::shared_ptr<GoalHandleExecuteTargetPose> goal_handle);
+  rclcpp_action::CancelResponse handleFigureEightCancel(const std::shared_ptr<GoalHandleExecuteFigureEight> goal_handle);
+  void handleScrewAccepted(const std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle);
+  void handleLinearAccepted(const std::shared_ptr<GoalHandleExecuteLinearMove> goal_handle);
+  void handleTargetPoseAccepted(const std::shared_ptr<GoalHandleExecuteTargetPose> goal_handle);
+  void handleFigureEightAccepted(const std::shared_ptr<GoalHandleExecuteFigureEight> goal_handle);
   bool validateGoal(const ExecuteScrewMove::Goal& goal, std::string& reason) const;
+  bool validateGoal(const ExecuteLinearMove::Goal& goal, std::string& reason) const;
+  bool validateGoal(const ExecuteTargetPose::Goal& goal, std::string& reason) const;
+  bool validateGoal(const ExecuteFigureEight::Goal& goal, std::string& reason) const;
   GoalConfig goalToConfig(const ExecuteScrewMove::Goal& goal) const;
+  GoalConfig goalToConfig(const ExecuteLinearMove::Goal& goal) const;
+  GoalConfig goalToConfig(const ExecuteTargetPose::Goal& goal) const;
+  GoalConfig goalToConfig(const ExecuteFigureEight::Goal& goal) const;
+  rclcpp_action::GoalResponse acceptGoalRequest(const std::string& goal_type);
+  rclcpp_action::CancelResponse handleCancelCommon(const void* native_handle);
+  void activateGoal(const ActiveGoalPtr& goal_handle);
   void onTimer();
-  bool initializeGoalIfNeeded(const std::shared_ptr<GoalHandleExecuteScrewMove>& goal_handle,
+  bool initializeGoalIfNeeded(const ActiveGoalPtr& goal_handle,
                               const GoalConfig& goal_cfg,
                               const ocs2::SystemObservation& obs);
   void onTrackingStatus(const std::string& status);
   void onTrackingMetric(const std_msgs::msg::Float64MultiArray& msg);
-  void publishWaitingFeedback(const std::shared_ptr<GoalHandleExecuteScrewMove>& goal_handle, const std::string& status);
-  void handleCanceledGoal(const std::shared_ptr<GoalHandleExecuteScrewMove>& goal_handle);
-  void finishGoal(const std::shared_ptr<GoalHandleExecuteScrewMove>& goal_handle,
+  void publishWaitingFeedback(const ActiveGoalPtr& goal_handle, const std::string& status);
+  void handleCanceledGoal(const ActiveGoalPtr& goal_handle);
+  void finishGoal(const ActiveGoalPtr& goal_handle,
                   GoalTermination termination,
                   const std::string& final_status,
                   const std::string& message);
   void clearActiveGoalLocked();
-  static void populateFeedback(ExecuteScrewMove::Feedback& feedback, const MonitorSnapshot& snapshot);
-  static void populateResult(ExecuteScrewMove::Result& result,
-                             bool success,
-                             const std::string& final_status,
-                             const std::string& message,
-                             const MonitorSnapshot& snapshot);
-  static uint32_t saturateClosestIndex(std::size_t index);
   bool getDeltaPose(Eigen::Vector3d& dp, Eigen::Quaterniond& dq, const rclcpp::Time& now) const;
   void applyDeltaPoseToTrajectory(PlannedCartesianTrajectory& traj) const;
   void publishHoldTrajectory(const std::string& reason);
@@ -88,7 +133,10 @@ class TrajectoryTTActionServerNode final : public rclcpp::Node {
   std::string urdfFile_;
   std::string libFolder_;
   std::string robotName_{"mobile_manipulator"};
-  std::string actionName_;
+  std::string screwActionName_;
+  std::string linearActionName_;
+  std::string targetPoseActionName_;
+  std::string figureEightActionName_;
   std::string globalFrame_{"world"};
 
   double publishRate_{20.0};
@@ -134,15 +182,17 @@ class TrajectoryTTActionServerNode final : public rclcpp::Node {
   rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr switchControllerClient_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::TimerBase::SharedPtr zeroBaseCmdTimer_;
-  rclcpp_action::Server<ExecuteScrewMove>::SharedPtr actionServer_;
+  rclcpp_action::Server<ExecuteScrewMove>::SharedPtr screwActionServer_;
+  rclcpp_action::Server<ExecuteLinearMove>::SharedPtr linearActionServer_;
+  rclcpp_action::Server<ExecuteTargetPose>::SharedPtr targetPoseActionServer_;
+  rclcpp_action::Server<ExecuteFigureEight>::SharedPtr figureEightActionServer_;
 
   std::mutex obsMtx_;
   ocs2::SystemObservation latestObs_;
   bool haveObs_{false};
 
   std::mutex stateMtx_;
-  std::shared_ptr<GoalHandleExecuteScrewMove> activeGoal_;
-  GoalConfig activeGoalConfig_;
+  ActiveGoalPtr activeGoal_;
   bool goalInitialized_{false};
   bool goalPublishingStarted_{false};
   bool cancelRequested_{false};

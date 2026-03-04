@@ -27,6 +27,27 @@
 
 namespace mpc_cartesian_planner::trajectory_tt_action_server_internal {
 
+enum class GoalTrajectoryType {
+  ScrewMove = 0,
+  LinearMove,
+  TargetPose,
+  FigureEight
+};
+
+inline const char* goalTypeName(GoalTrajectoryType type) {
+  switch (type) {
+    case GoalTrajectoryType::ScrewMove:
+      return "screw_move";
+    case GoalTrajectoryType::LinearMove:
+      return "linear_move";
+    case GoalTrajectoryType::TargetPose:
+      return "target_pose";
+    case GoalTrajectoryType::FigureEight:
+      return "figure_eight";
+  }
+  return "unknown";
+}
+
 inline std::string toLowerCopy(std::string s) {
   std::transform(s.begin(), s.end(), s.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -182,13 +203,27 @@ inline bool sampleTrajectoryAtTime(const PlannedCartesianTrajectory& traj,
 }
 
 struct GoalConfig {
+  GoalTrajectoryType trajectory_type{GoalTrajectoryType::ScrewMove};
   double duration{0.0};
   double dt{0.0};
   TimeScalingType time_scaling{TimeScalingType::MinJerk};
+
+  Eigen::Vector3d linear_offset{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d linear_euler_zyx{Eigen::Vector3d::Zero()};
+  bool linear_in_tool_frame{false};
+
+  Eigen::Vector3d target_p{Eigen::Vector3d::Zero()};
+  Eigen::Quaterniond target_q{Eigen::Quaterniond::Identity()};
+  bool use_target_orientation{false};
+
   Eigen::Vector3d screw_uhat{0.0, 1.0, 0.0};
   Eigen::Vector3d screw_r{0.0, 0.0, 0.0};
   double screw_theta{0.0};
   bool screw_in_tool_frame{true};
+
+  double figure_eight_amplitude{0.2};
+  double figure_eight_frequency{0.1};
+  Eigen::Vector3d figure_eight_plane_axis{Eigen::Vector3d::UnitZ()};
 };
 
 struct MonitorSnapshot {

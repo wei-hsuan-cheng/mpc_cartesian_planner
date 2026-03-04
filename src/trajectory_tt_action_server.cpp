@@ -39,6 +39,10 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
   this->declare_parameter<std::string>("libFolder", "");
   this->declare_parameter<std::string>("robotName", std::string("mobile_manipulator"));
   this->declare_parameter<std::string>("actionName", std::string(""));
+  this->declare_parameter<std::string>("screwActionName", std::string(""));
+  this->declare_parameter<std::string>("linearActionName", std::string(""));
+  this->declare_parameter<std::string>("targetPoseActionName", std::string(""));
+  this->declare_parameter<std::string>("figureEightActionName", std::string(""));
 
   this->declare_parameter<double>("publishRate", 20.0);
   this->declare_parameter<std::string>("referenceTiming", std::string("time"));
@@ -68,9 +72,22 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
   libFolder_ = this->get_parameter("libFolder").as_string();
   robotName_ = this->get_parameter("robotName").as_string();
 
-  actionName_ = this->get_parameter("actionName").as_string();
-  if (actionName_.empty()) {
-    actionName_ = robotName_ + "/trajectory_tracking/execute_screw_move";
+  const std::string legacyActionName = this->get_parameter("actionName").as_string();
+  screwActionName_ = this->get_parameter("screwActionName").as_string();
+  linearActionName_ = this->get_parameter("linearActionName").as_string();
+  targetPoseActionName_ = this->get_parameter("targetPoseActionName").as_string();
+  figureEightActionName_ = this->get_parameter("figureEightActionName").as_string();
+  if (screwActionName_.empty()) {
+    screwActionName_ = legacyActionName.empty() ? robotName_ + "/trajectory_tracking/execute_screw_move" : legacyActionName;
+  }
+  if (linearActionName_.empty()) {
+    linearActionName_ = robotName_ + "/trajectory_tracking/execute_linear_move";
+  }
+  if (targetPoseActionName_.empty()) {
+    targetPoseActionName_ = robotName_ + "/trajectory_tracking/execute_target_pose";
+  }
+  if (figureEightActionName_.empty()) {
+    figureEightActionName_ = robotName_ + "/trajectory_tracking/execute_figure_eight";
   }
 
   publishRate_ = this->get_parameter("publishRate").as_double();
@@ -189,91 +206,52 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
       robotName_ + "/trajectory_tracking/tracking_metric", rclcpp::QoS(10).reliable(),
       [this](const std_msgs::msg::Float64MultiArray::ConstSharedPtr msg) { onTrackingMetric(*msg); });
 
-  actionServer_ = rclcpp_action::create_server<ExecuteScrewMove>(
+  screwActionServer_ = rclcpp_action::create_server<ExecuteScrewMove>(
       this,
-      actionName_,
-      std::bind(&TrajectoryTTActionServerNode::handleGoal, this, std::placeholders::_1, std::placeholders::_2),
-      std::bind(&TrajectoryTTActionServerNode::handleCancel, this, std::placeholders::_1),
-      std::bind(&TrajectoryTTActionServerNode::handleAccepted, this, std::placeholders::_1));
+      screwActionName_,
+      std::bind(&TrajectoryTTActionServerNode::handleScrewGoal, this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&TrajectoryTTActionServerNode::handleScrewCancel, this, std::placeholders::_1),
+      std::bind(&TrajectoryTTActionServerNode::handleScrewAccepted, this, std::placeholders::_1));
+  linearActionServer_ = rclcpp_action::create_server<ExecuteLinearMove>(
+      this,
+      linearActionName_,
+      std::bind(&TrajectoryTTActionServerNode::handleLinearGoal, this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&TrajectoryTTActionServerNode::handleLinearCancel, this, std::placeholders::_1),
+      std::bind(&TrajectoryTTActionServerNode::handleLinearAccepted, this, std::placeholders::_1));
+  targetPoseActionServer_ = rclcpp_action::create_server<ExecuteTargetPose>(
+      this,
+      targetPoseActionName_,
+      std::bind(&TrajectoryTTActionServerNode::handleTargetPoseGoal, this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&TrajectoryTTActionServerNode::handleTargetPoseCancel, this, std::placeholders::_1),
+      std::bind(&TrajectoryTTActionServerNode::handleTargetPoseAccepted, this, std::placeholders::_1));
+  figureEightActionServer_ = rclcpp_action::create_server<ExecuteFigureEight>(
+      this,
+      figureEightActionName_,
+      std::bind(&TrajectoryTTActionServerNode::handleFigureEightGoal, this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&TrajectoryTTActionServerNode::handleFigureEightCancel, this, std::placeholders::_1),
+      std::bind(&TrajectoryTTActionServerNode::handleFigureEightAccepted, this, std::placeholders::_1));
 
   const auto period = std::chrono::duration<double>(1.0 / std::max(1e-6, publishRate_));
   timer_ = this->create_wall_timer(period, std::bind(&TrajectoryTTActionServerNode::onTimer, this));
 
-  RCLCPP_INFO(this->get_logger(), "TT action server ready on %s", actionName_.c_str());
-}
-
-rclcpp_action::GoalResponse TrajectoryTTActionServerNode::handleGoal(
-    const rclcpp_action::GoalUUID& /*uuid*/,
-    std::shared_ptr<const ExecuteScrewMove::Goal> goal) {
-  std::string reject_reason;
-  if (!validateGoal(*goal, reject_reason)) {
-    RCLCPP_WARN(this->get_logger(), "Rejecting screw move goal: %s", reject_reason.c_str());
-    return rclcpp_action::GoalResponse::REJECT;
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(stateMtx_);
-    if (activeGoal_) {
-      RCLCPP_WARN(this->get_logger(), "Rejecting screw move goal: another goal is already active.");
-      return rclcpp_action::GoalResponse::REJECT;
-    }
-  }
-
-  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-}
-
-rclcpp_action::CancelResponse TrajectoryTTActionServerNode::handleCancel(
-    const std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle) {
-  std::lock_guard<std::mutex> lock(stateMtx_);
-  if (!activeGoal_ || activeGoal_ != goal_handle) {
-    return rclcpp_action::CancelResponse::REJECT;
-  }
-  cancelRequested_ = true;
-  return rclcpp_action::CancelResponse::ACCEPT;
-}
-
-void TrajectoryTTActionServerNode::handleAccepted(const std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle) {
-  {
-    std::lock_guard<std::mutex> lock(stateMtx_);
-    activeGoal_ = goal_handle;
-    activeGoalConfig_ = goalToConfig(*goal_handle->get_goal());
-    goalInitialized_ = false;
-    goalPublishingStarted_ = false;
-    cancelRequested_ = false;
-    planner_.reset();
-    nominalTraj_ = PlannedCartesianTrajectory{};
-    haveNominalTraj_ = false;
-    haveLastProjectionIndex_ = false;
-    lastProjectionIndex_ = 0;
-    warnedMissingFk_ = false;
-    centerP_ = Eigen::Vector3d::Zero();
-    q0_ = Eigen::Quaterniond::Identity();
-    monitorSnapshot_ = MonitorSnapshot{};
-  }
-  {
-    std::lock_guard<std::mutex> lock(waitingFeedbackMtx_);
-    lastWaitingFeedbackTime_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
-  }
-
-  publishWaitingFeedback(goal_handle, "WAITING_FOR_OBSERVATION");
   RCLCPP_INFO(this->get_logger(),
-              "Accepted screw move goal: duration=%.3f dt=%.3f theta=%.3f tool_frame=%d",
-              goal_handle->get_goal()->duration,
-              goal_handle->get_goal()->dt,
-              goal_handle->get_goal()->screw_theta,
-              static_cast<int>(goal_handle->get_goal()->screw_in_tool_frame));
+              "TT action servers ready on %s, %s, %s, %s",
+              screwActionName_.c_str(),
+              linearActionName_.c_str(),
+              targetPoseActionName_.c_str(),
+              figureEightActionName_.c_str());
 }
 
 void TrajectoryTTActionServerNode::onTimer() {
-  std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle;
+  ActiveGoalPtr goal_handle;
   GoalConfig goal_cfg;
   bool cancel_requested = false;
   {
     std::lock_guard<std::mutex> lock(stateMtx_);
     if (!activeGoal_) return;
     goal_handle = activeGoal_;
-    goal_cfg = activeGoalConfig_;
-    cancel_requested = cancelRequested_ || activeGoal_->is_canceling();
+    goal_cfg = activeGoal_->goalConfig();
+    cancel_requested = cancelRequested_ || activeGoal_->isCanceling();
   }
 
   if (cancel_requested) {

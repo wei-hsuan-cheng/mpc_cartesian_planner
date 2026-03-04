@@ -85,9 +85,10 @@ ros2 service call /mobile_manipulator/trajectory_tracking/toggle_tt_publisher st
 
 If `publishModeScheduleOnEnable: true` (default), the TT publisher also publishes `/<robotName>_mode_schedule` (default: mode `1`) on enable/resume so you don't have to manually publish a `ModeSchedule` before activating `mpc_controller`.
 
-## Screw motion action example:
+## Cartesian trajectory tracking action examples:
 
 ```bash
+# Screw move
 ros2 action send_goal \
   /mobile_manipulator/trajectory_tracking/execute_screw_move \
   mpc_cartesian_planner/action/ExecuteScrewMove \
@@ -101,16 +102,38 @@ ros2 action send_goal \
     screw_in_tool_frame: true
   }"
 
+# Linear move: [dx, dy, dz, thz, thy, thx]
 ros2 action send_goal \
-  /mobile_manipulator/trajectory_tracking/execute_screw_move \
-  mpc_cartesian_planner/action/ExecuteScrewMove \
+  /mobile_manipulator/trajectory_tracking/execute_linear_move \
+  mpc_cartesian_planner/action/ExecuteLinearMove \
   "{
     duration: 5.0, 
     dt: 0.02, 
     time_scaling: 'min_jerk', 
-    screw_uhat: [0.0, 0.0, -1.0], 
-    screw_r: [-0.5, 0.25, 0.0], 
-    screw_theta: 0.7854, 
-    screw_in_tool_frame: false
+    linear_move_offset: [0.0, 0.0, 0.1, 0.0, 0.7854, 0.0],
+    linear_move_in_tool_frame: true
+  }"
+
+# Target pose: [x, y, z, qw, qx, qy, qz]
+ros2 action send_goal \
+  /mobile_manipulator/trajectory_tracking/execute_target_pose \
+  mpc_cartesian_planner/action/ExecuteTargetPose \
+  "{
+    duration: 5.0,
+    dt: 0.02,
+    time_scaling: 'min_jerk',
+    target_pose: [0.45, 0.2, 0.7, 0.707, 0.0, 0.0, -0.707]
+  }"
+
+# Figure eight
+ros2 action send_goal \
+  /mobile_manipulator/trajectory_tracking/execute_figure_eight \
+  mpc_cartesian_planner/action/ExecuteFigureEight \
+  "{
+    duration: 5.0,
+    dt: 0.02,
+    amplitude: 0.20,
+    frequency: 0.05,
+    plane_axis: [1.0, 0.0, 1.0]
   }"
 ```

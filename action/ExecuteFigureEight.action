@@ -1,0 +1,28 @@
+# Request
+float64 duration
+float64 dt
+float64 amplitude
+float64 frequency
+float64[3] plane_axis
+
+---
+
+# Result
+bool success
+string final_status
+string message
+float64 progress
+float64 pos_err
+float64 ori_err_deg
+float64 lag_sec
+uint32 closest_index
+
+---
+
+# Feedback
+string tracking_status
+float64 progress
+float64 pos_err
+float64 ori_err_deg
+float64 lag_sec
+uint32 closest_index

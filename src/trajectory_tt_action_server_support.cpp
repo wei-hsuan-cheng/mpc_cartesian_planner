@@ -3,15 +3,19 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 
 #include <ocs2_ros_interfaces/common/RosMsgHelpers.h>
 
+#include "robot_math_utils/robot_math_utils_v1_18.hpp"
 #include "trajectory_tt_action_server_impl.h"
 
 using ocs2::SystemObservation;
@@ -19,6 +23,8 @@ using ocs2::SystemObservation;
 namespace mpc_cartesian_planner {
 
 using trajectory_tt_action_server_internal::computeEePose;
+using trajectory_tt_action_server_internal::GoalTrajectoryType;
+using trajectory_tt_action_server_internal::goalTypeName;
 using trajectory_tt_action_server_internal::has_member_activate_asap;
 using trajectory_tt_action_server_internal::has_member_activate_controllers;
 using trajectory_tt_action_server_internal::has_member_deactivate_controllers;
@@ -28,24 +34,166 @@ using trajectory_tt_action_server_internal::has_member_stop_controllers;
 using trajectory_tt_action_server_internal::parseTimeScaling;
 using trajectory_tt_action_server_internal::switchControllerStrictness;
 
-bool TrajectoryTTActionServerNode::validateGoal(const ExecuteScrewMove::Goal& goal, std::string& reason) const {
-  auto finite3 = [](const std::array<double, 3>& values) {
-    return std::isfinite(values[0]) && std::isfinite(values[1]) && std::isfinite(values[2]);
-  };
+namespace {
 
-  if (!std::isfinite(goal.duration) || goal.duration <= 0.0) {
+bool validateFiniteTiming(double duration, double dt, std::string& reason) {
+  if (!std::isfinite(duration) || duration <= 0.0) {
     reason = "duration must be > 0.";
     return false;
   }
-  if (!std::isfinite(goal.dt) || goal.dt <= 0.0) {
+  if (!std::isfinite(dt) || dt <= 0.0) {
     reason = "dt must be > 0.";
+    return false;
+  }
+  return true;
+}
+
+template <typename Container>
+bool allFinite(const Container& values) {
+  return std::all_of(values.begin(), values.end(), [](double value) { return std::isfinite(value); });
+}
+
+template <typename ActionT>
+void populateFeedbackCommon(typename ActionT::Feedback& feedback,
+                            const TrajectoryTTActionServerNode::MonitorSnapshot& snapshot) {
+  feedback.tracking_status = snapshot.status;
+  feedback.progress = snapshot.progress;
+  feedback.pos_err = snapshot.pos_err;
+  feedback.ori_err_deg = snapshot.ori_err_deg;
+  feedback.lag_sec = snapshot.lag_sec;
+  feedback.closest_index =
+      static_cast<uint32_t>(std::min<std::size_t>(snapshot.closest_index, std::numeric_limits<uint32_t>::max()));
+}
+
+template <typename ActionT>
+void populateResultCommon(typename ActionT::Result& result,
+                          bool success,
+                          const std::string& final_status,
+                          const std::string& message,
+                          const TrajectoryTTActionServerNode::MonitorSnapshot& snapshot) {
+  result.success = success;
+  result.final_status = final_status;
+  result.message = message;
+  result.progress = snapshot.progress;
+  result.pos_err = snapshot.pos_err;
+  result.ori_err_deg = snapshot.ori_err_deg;
+  result.lag_sec = snapshot.lag_sec;
+  result.closest_index =
+      static_cast<uint32_t>(std::min<std::size_t>(snapshot.closest_index, std::numeric_limits<uint32_t>::max()));
+}
+
+template <typename ActionT>
+class ActiveGoal final : public ActiveGoalBase {
+ public:
+  using GoalHandle = rclcpp_action::ServerGoalHandle<ActionT>;
+
+  ActiveGoal(std::shared_ptr<GoalHandle> goal_handle, TrajectoryTTActionServerNode::GoalConfig goal_config)
+      : goal_handle_(std::move(goal_handle)), goal_config_(std::move(goal_config)) {}
+
+  const TrajectoryTTActionServerNode::GoalConfig& goalConfig() const override { return goal_config_; }
+
+  bool isCanceling() const override { return goal_handle_->is_canceling(); }
+
+  bool matchesHandle(const void* native_handle) const override { return goal_handle_.get() == native_handle; }
+
+  void publishWaitingFeedback(const std::string& status) override {
+    auto feedback = std::make_shared<typename ActionT::Feedback>();
+    feedback->tracking_status = status;
+    feedback->progress = 0.0;
+    feedback->pos_err = 0.0;
+    feedback->ori_err_deg = 0.0;
+    feedback->lag_sec = 0.0;
+    feedback->closest_index = 0;
+    goal_handle_->publish_feedback(feedback);
+  }
+
+  void publishFeedback(const TrajectoryTTActionServerNode::MonitorSnapshot& snapshot) override {
+    auto feedback = std::make_shared<typename ActionT::Feedback>();
+    populateFeedbackCommon<ActionT>(*feedback, snapshot);
+    goal_handle_->publish_feedback(feedback);
+  }
+
+  void finish(TrajectoryTTActionServerNode::GoalTermination termination,
+              const std::string& final_status,
+              const std::string& message,
+              const TrajectoryTTActionServerNode::MonitorSnapshot& snapshot) override {
+    auto result = std::make_shared<typename ActionT::Result>();
+    populateResultCommon<ActionT>(*result, termination == TrajectoryTTActionServerNode::GoalTermination::Succeeded,
+                                  final_status, message, snapshot);
+
+    switch (termination) {
+      case TrajectoryTTActionServerNode::GoalTermination::Succeeded:
+        goal_handle_->succeed(result);
+        break;
+      case TrajectoryTTActionServerNode::GoalTermination::Aborted:
+        goal_handle_->abort(result);
+        break;
+      case TrajectoryTTActionServerNode::GoalTermination::Canceled:
+        goal_handle_->canceled(result);
+        break;
+    }
+  }
+
+ private:
+  std::shared_ptr<GoalHandle> goal_handle_;
+  TrajectoryTTActionServerNode::GoalConfig goal_config_;
+};
+
+template <typename ActionT>
+TrajectoryTTActionServerNode::ActiveGoalPtr makeActiveGoal(
+    std::shared_ptr<rclcpp_action::ServerGoalHandle<ActionT>> goal_handle,
+    TrajectoryTTActionServerNode::GoalConfig goal_config) {
+  return std::make_shared<ActiveGoal<ActionT>>(std::move(goal_handle), std::move(goal_config));
+}
+
+std::string formatVec3(const Eigen::Vector3d& value) {
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(3)
+      << "[" << value.x() << ", " << value.y() << ", " << value.z() << "]";
+  return oss.str();
+}
+
+std::string describeGoal(const TrajectoryTTActionServerNode::GoalConfig& goal_cfg) {
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(3)
+      << "duration=" << goal_cfg.duration
+      << " dt=" << goal_cfg.dt;
+  switch (goal_cfg.trajectory_type) {
+    case GoalTrajectoryType::ScrewMove:
+      oss << " theta=" << goal_cfg.screw_theta
+          << " tool_frame=" << static_cast<int>(goal_cfg.screw_in_tool_frame);
+      break;
+    case GoalTrajectoryType::LinearMove:
+      oss << " offset=" << formatVec3(goal_cfg.linear_offset)
+          << " tool_frame=" << static_cast<int>(goal_cfg.linear_in_tool_frame);
+      break;
+    case GoalTrajectoryType::TargetPose:
+      oss << " target=" << formatVec3(goal_cfg.target_p)
+          << " use_target_orientation=" << static_cast<int>(goal_cfg.use_target_orientation);
+      break;
+    case GoalTrajectoryType::FigureEight:
+      oss << " amplitude=" << goal_cfg.figure_eight_amplitude
+          << " frequency=" << goal_cfg.figure_eight_frequency;
+      break;
+  }
+  return oss.str();
+}
+
+std::string goalMessage(const TrajectoryTTActionServerNode::GoalConfig& goal_cfg, const std::string& suffix) {
+  return std::string(goalTypeName(goal_cfg.trajectory_type)) + " " + suffix;
+}
+
+}  // namespace
+
+bool TrajectoryTTActionServerNode::validateGoal(const ExecuteScrewMove::Goal& goal, std::string& reason) const {
+  if (!validateFiniteTiming(goal.duration, goal.dt, reason)) {
     return false;
   }
   if (!std::isfinite(goal.screw_theta)) {
     reason = "screw_theta must be finite.";
     return false;
   }
-  if (!finite3(goal.screw_uhat) || !finite3(goal.screw_r)) {
+  if (!allFinite(goal.screw_uhat) || !allFinite(goal.screw_r)) {
     reason = "screw vectors must be finite.";
     return false;
   }
@@ -58,8 +206,70 @@ bool TrajectoryTTActionServerNode::validateGoal(const ExecuteScrewMove::Goal& go
   return true;
 }
 
+bool TrajectoryTTActionServerNode::validateGoal(const ExecuteLinearMove::Goal& goal, std::string& reason) const {
+  if (!validateFiniteTiming(goal.duration, goal.dt, reason)) {
+    return false;
+  }
+  if (goal.linear_move_offset.size() != 3 && goal.linear_move_offset.size() != 6) {
+    reason = "linear_move_offset must have length 3 or 6.";
+    return false;
+  }
+  if (!allFinite(goal.linear_move_offset)) {
+    reason = "linear_move_offset must be finite.";
+    return false;
+  }
+  return true;
+}
+
+bool TrajectoryTTActionServerNode::validateGoal(const ExecuteTargetPose::Goal& goal, std::string& reason) const {
+  if (!validateFiniteTiming(goal.duration, goal.dt, reason)) {
+    return false;
+  }
+  if (goal.target_pose.size() != 3 && goal.target_pose.size() != 6 && goal.target_pose.size() != 7) {
+    reason = "target_pose must have length 3, 6, or 7.";
+    return false;
+  }
+  if (!allFinite(goal.target_pose)) {
+    reason = "target_pose must be finite.";
+    return false;
+  }
+  if (goal.target_pose.size() == 7) {
+    const Eigen::Quaterniond q(goal.target_pose[3], goal.target_pose[4], goal.target_pose[5], goal.target_pose[6]);
+    if (q.norm() < 1e-12) {
+      reason = "target_pose quaternion must be non-zero.";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool TrajectoryTTActionServerNode::validateGoal(const ExecuteFigureEight::Goal& goal, std::string& reason) const {
+  if (!validateFiniteTiming(goal.duration, goal.dt, reason)) {
+    return false;
+  }
+  if (!std::isfinite(goal.amplitude) || goal.amplitude < 0.0) {
+    reason = "amplitude must be finite and >= 0.";
+    return false;
+  }
+  if (!std::isfinite(goal.frequency) || goal.frequency <= 0.0) {
+    reason = "frequency must be > 0.";
+    return false;
+  }
+  if (!allFinite(goal.plane_axis)) {
+    reason = "plane_axis must be finite.";
+    return false;
+  }
+  const Eigen::Vector3d plane_axis(goal.plane_axis[0], goal.plane_axis[1], goal.plane_axis[2]);
+  if (plane_axis.norm() < 1e-9) {
+    reason = "plane_axis must be non-zero.";
+    return false;
+  }
+  return true;
+}
+
 TrajectoryTTActionServerNode::GoalConfig TrajectoryTTActionServerNode::goalToConfig(const ExecuteScrewMove::Goal& goal) const {
   GoalConfig cfg;
+  cfg.trajectory_type = GoalTrajectoryType::ScrewMove;
   cfg.duration = goal.duration;
   cfg.dt = goal.dt;
   cfg.time_scaling = parseTimeScaling(goal.time_scaling);
@@ -70,7 +280,178 @@ TrajectoryTTActionServerNode::GoalConfig TrajectoryTTActionServerNode::goalToCon
   return cfg;
 }
 
-bool TrajectoryTTActionServerNode::initializeGoalIfNeeded(const std::shared_ptr<GoalHandleExecuteScrewMove>& goal_handle,
+TrajectoryTTActionServerNode::GoalConfig TrajectoryTTActionServerNode::goalToConfig(const ExecuteLinearMove::Goal& goal) const {
+  GoalConfig cfg;
+  cfg.trajectory_type = GoalTrajectoryType::LinearMove;
+  cfg.duration = goal.duration;
+  cfg.dt = goal.dt;
+  cfg.time_scaling = parseTimeScaling(goal.time_scaling);
+  cfg.linear_offset = Eigen::Vector3d(goal.linear_move_offset[0], goal.linear_move_offset[1], goal.linear_move_offset[2]);
+  if (goal.linear_move_offset.size() == 6) {
+    cfg.linear_euler_zyx =
+        Eigen::Vector3d(goal.linear_move_offset[3], goal.linear_move_offset[4], goal.linear_move_offset[5]);
+  }
+  cfg.linear_in_tool_frame = goal.linear_move_in_tool_frame;
+  return cfg;
+}
+
+TrajectoryTTActionServerNode::GoalConfig TrajectoryTTActionServerNode::goalToConfig(const ExecuteTargetPose::Goal& goal) const {
+  GoalConfig cfg;
+  cfg.trajectory_type = GoalTrajectoryType::TargetPose;
+  cfg.duration = goal.duration;
+  cfg.dt = goal.dt;
+  cfg.time_scaling = parseTimeScaling(goal.time_scaling);
+  cfg.target_p = Eigen::Vector3d(goal.target_pose[0], goal.target_pose[1], goal.target_pose[2]);
+  if (goal.target_pose.size() == 6) {
+    const Eigen::Vector3d euler_zyx(goal.target_pose[3], goal.target_pose[4], goal.target_pose[5]);
+    cfg.target_q = RMUtils::zyxEuler2Quat(euler_zyx, /*rad=*/true).normalized();
+    cfg.use_target_orientation = true;
+  } else if (goal.target_pose.size() == 7) {
+    cfg.target_q = Eigen::Quaterniond(goal.target_pose[3], goal.target_pose[4], goal.target_pose[5], goal.target_pose[6]).normalized();
+    cfg.use_target_orientation = true;
+  }
+  return cfg;
+}
+
+TrajectoryTTActionServerNode::GoalConfig TrajectoryTTActionServerNode::goalToConfig(const ExecuteFigureEight::Goal& goal) const {
+  GoalConfig cfg;
+  cfg.trajectory_type = GoalTrajectoryType::FigureEight;
+  cfg.duration = goal.duration;
+  cfg.dt = goal.dt;
+  cfg.figure_eight_amplitude = goal.amplitude;
+  cfg.figure_eight_frequency = goal.frequency;
+  cfg.figure_eight_plane_axis = Eigen::Vector3d(goal.plane_axis[0], goal.plane_axis[1], goal.plane_axis[2]);
+  return cfg;
+}
+
+rclcpp_action::GoalResponse TrajectoryTTActionServerNode::acceptGoalRequest(const std::string& goal_type) {
+  std::lock_guard<std::mutex> lock(stateMtx_);
+  if (activeGoal_) {
+    RCLCPP_WARN(this->get_logger(), "Rejecting %s goal: another goal is already active.", goal_type.c_str());
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+
+rclcpp_action::CancelResponse TrajectoryTTActionServerNode::handleCancelCommon(const void* native_handle) {
+  std::lock_guard<std::mutex> lock(stateMtx_);
+  if (!activeGoal_ || !activeGoal_->matchesHandle(native_handle)) {
+    return rclcpp_action::CancelResponse::REJECT;
+  }
+  cancelRequested_ = true;
+  return rclcpp_action::CancelResponse::ACCEPT;
+}
+
+void TrajectoryTTActionServerNode::activateGoal(const ActiveGoalPtr& goal_handle) {
+  const GoalConfig& goal_cfg = goal_handle->goalConfig();
+  {
+    std::lock_guard<std::mutex> lock(stateMtx_);
+    activeGoal_ = goal_handle;
+    goalInitialized_ = false;
+    goalPublishingStarted_ = false;
+    cancelRequested_ = false;
+    planner_.reset();
+    nominalTraj_ = PlannedCartesianTrajectory{};
+    haveNominalTraj_ = false;
+    haveLastProjectionIndex_ = false;
+    lastProjectionIndex_ = 0;
+    warnedMissingFk_ = false;
+    centerP_ = Eigen::Vector3d::Zero();
+    q0_ = Eigen::Quaterniond::Identity();
+    monitorSnapshot_ = MonitorSnapshot{};
+  }
+  {
+    std::lock_guard<std::mutex> lock(waitingFeedbackMtx_);
+    lastWaitingFeedbackTime_ = rclcpp::Time(0, 0, this->get_clock()->get_clock_type());
+  }
+
+  publishWaitingFeedback(goal_handle, "WAITING_FOR_OBSERVATION");
+  RCLCPP_INFO(this->get_logger(), "Accepted %s goal: %s", goalTypeName(goal_cfg.trajectory_type), describeGoal(goal_cfg).c_str());
+}
+
+rclcpp_action::GoalResponse TrajectoryTTActionServerNode::handleScrewGoal(
+    const rclcpp_action::GoalUUID& /*uuid*/,
+    std::shared_ptr<const ExecuteScrewMove::Goal> goal) {
+  std::string reject_reason;
+  if (!validateGoal(*goal, reject_reason)) {
+    RCLCPP_WARN(this->get_logger(), "Rejecting screw_move goal: %s", reject_reason.c_str());
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  return acceptGoalRequest("screw_move");
+}
+
+rclcpp_action::GoalResponse TrajectoryTTActionServerNode::handleLinearGoal(
+    const rclcpp_action::GoalUUID& /*uuid*/,
+    std::shared_ptr<const ExecuteLinearMove::Goal> goal) {
+  std::string reject_reason;
+  if (!validateGoal(*goal, reject_reason)) {
+    RCLCPP_WARN(this->get_logger(), "Rejecting linear_move goal: %s", reject_reason.c_str());
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  return acceptGoalRequest("linear_move");
+}
+
+rclcpp_action::GoalResponse TrajectoryTTActionServerNode::handleTargetPoseGoal(
+    const rclcpp_action::GoalUUID& /*uuid*/,
+    std::shared_ptr<const ExecuteTargetPose::Goal> goal) {
+  std::string reject_reason;
+  if (!validateGoal(*goal, reject_reason)) {
+    RCLCPP_WARN(this->get_logger(), "Rejecting target_pose goal: %s", reject_reason.c_str());
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  return acceptGoalRequest("target_pose");
+}
+
+rclcpp_action::GoalResponse TrajectoryTTActionServerNode::handleFigureEightGoal(
+    const rclcpp_action::GoalUUID& /*uuid*/,
+    std::shared_ptr<const ExecuteFigureEight::Goal> goal) {
+  std::string reject_reason;
+  if (!validateGoal(*goal, reject_reason)) {
+    RCLCPP_WARN(this->get_logger(), "Rejecting figure_eight goal: %s", reject_reason.c_str());
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+  return acceptGoalRequest("figure_eight");
+}
+
+rclcpp_action::CancelResponse TrajectoryTTActionServerNode::handleScrewCancel(
+    const std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle) {
+  return handleCancelCommon(goal_handle.get());
+}
+
+rclcpp_action::CancelResponse TrajectoryTTActionServerNode::handleLinearCancel(
+    const std::shared_ptr<GoalHandleExecuteLinearMove> goal_handle) {
+  return handleCancelCommon(goal_handle.get());
+}
+
+rclcpp_action::CancelResponse TrajectoryTTActionServerNode::handleTargetPoseCancel(
+    const std::shared_ptr<GoalHandleExecuteTargetPose> goal_handle) {
+  return handleCancelCommon(goal_handle.get());
+}
+
+rclcpp_action::CancelResponse TrajectoryTTActionServerNode::handleFigureEightCancel(
+    const std::shared_ptr<GoalHandleExecuteFigureEight> goal_handle) {
+  return handleCancelCommon(goal_handle.get());
+}
+
+void TrajectoryTTActionServerNode::handleScrewAccepted(const std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle) {
+  activateGoal(makeActiveGoal<ExecuteScrewMove>(goal_handle, goalToConfig(*goal_handle->get_goal())));
+}
+
+void TrajectoryTTActionServerNode::handleLinearAccepted(const std::shared_ptr<GoalHandleExecuteLinearMove> goal_handle) {
+  activateGoal(makeActiveGoal<ExecuteLinearMove>(goal_handle, goalToConfig(*goal_handle->get_goal())));
+}
+
+void TrajectoryTTActionServerNode::handleTargetPoseAccepted(
+    const std::shared_ptr<GoalHandleExecuteTargetPose> goal_handle) {
+  activateGoal(makeActiveGoal<ExecuteTargetPose>(goal_handle, goalToConfig(*goal_handle->get_goal())));
+}
+
+void TrajectoryTTActionServerNode::handleFigureEightAccepted(
+    const std::shared_ptr<GoalHandleExecuteFigureEight> goal_handle) {
+  activateGoal(makeActiveGoal<ExecuteFigureEight>(goal_handle, goalToConfig(*goal_handle->get_goal())));
+}
+
+bool TrajectoryTTActionServerNode::initializeGoalIfNeeded(const ActiveGoalPtr& goal_handle,
                                                           const GoalConfig& goal_cfg,
                                                           const SystemObservation& obs) {
   {
@@ -84,22 +465,64 @@ bool TrajectoryTTActionServerNode::initializeGoalIfNeeded(const std::shared_ptr<
   if (interface_ && pin_ && mapping_) {
     std::lock_guard<std::mutex> lock(pinMtx_);
     if (!computeEePose(*pin_, *mapping_, eeFrameId_, obs.state, center_p, q0)) {
-      RCLCPP_WARN(this->get_logger(), "Initial FK failed for screw move goal. Using origin pose.");
+      RCLCPP_WARN(this->get_logger(), "Initial FK failed for %s goal. Using origin pose.",
+                  goalTypeName(goal_cfg.trajectory_type));
       center_p.setZero();
       q0 = Eigen::Quaterniond::Identity();
     }
   }
 
-  ScrewMoveParams params;
-  params.horizon_T = goal_cfg.duration;
-  params.dt = goal_cfg.dt;
-  params.u_hat = goal_cfg.screw_uhat;
-  params.r = goal_cfg.screw_r;
-  params.theta = goal_cfg.screw_theta;
-  params.expressed_in_body_frame = goal_cfg.screw_in_tool_frame;
-  params.time_scaling = goal_cfg.time_scaling;
-
-  auto planner = std::make_unique<ScrewMovePlanner>(center_p, q0, params);
+  std::unique_ptr<CartesianTrajectoryPlanner> planner;
+  switch (goal_cfg.trajectory_type) {
+    case GoalTrajectoryType::ScrewMove: {
+      ScrewMoveParams params;
+      params.horizon_T = goal_cfg.duration;
+      params.dt = goal_cfg.dt;
+      params.u_hat = goal_cfg.screw_uhat;
+      params.r = goal_cfg.screw_r;
+      params.theta = goal_cfg.screw_theta;
+      params.expressed_in_body_frame = goal_cfg.screw_in_tool_frame;
+      params.time_scaling = goal_cfg.time_scaling;
+      planner = std::make_unique<ScrewMovePlanner>(center_p, q0, params);
+      break;
+    }
+    case GoalTrajectoryType::LinearMove: {
+      LinearMoveParams params;
+      params.horizon_T = goal_cfg.duration;
+      params.dt = goal_cfg.dt;
+      params.offset = goal_cfg.linear_offset;
+      params.euler_zyx = goal_cfg.linear_euler_zyx;
+      params.offset_in_body_frame = goal_cfg.linear_in_tool_frame;
+      params.time_scaling = goal_cfg.time_scaling;
+      planner = std::make_unique<LinearMovePlanner>(center_p, q0, params);
+      break;
+    }
+    case GoalTrajectoryType::TargetPose: {
+      TargetPoseParams params;
+      params.horizon_T = goal_cfg.duration;
+      params.dt = goal_cfg.dt;
+      params.time_scaling = goal_cfg.time_scaling;
+      params.target_p = goal_cfg.target_p;
+      params.target_q = goal_cfg.use_target_orientation ? goal_cfg.target_q : q0;
+      params.use_target_orientation = goal_cfg.use_target_orientation;
+      planner = std::make_unique<TargetPosePlanner>(center_p, q0, params);
+      break;
+    }
+    case GoalTrajectoryType::FigureEight: {
+      FigureEightParams params;
+      params.horizon_T = goal_cfg.duration;
+      params.dt = goal_cfg.dt;
+      params.amplitude = goal_cfg.figure_eight_amplitude;
+      params.frequency_hz = goal_cfg.figure_eight_frequency;
+      params.plane_axis = goal_cfg.figure_eight_plane_axis;
+      planner = std::make_unique<FigureEightPlanner>(center_p, q0, params);
+      break;
+    }
+  }
+  if (!planner) {
+    finishGoal(goal_handle, GoalTermination::Aborted, "ABORTED", "Failed to construct a trajectory planner.");
+    return false;
+  }
   planner->setStartTime(obs.time);
   PlannedCartesianTrajectory nominal_traj = planner->plan(obs);
   if (nominal_traj.empty()) {
@@ -129,18 +552,20 @@ bool TrajectoryTTActionServerNode::initializeGoalIfNeeded(const std::shared_ptr<
     warnedMissingFk_ = false;
   }
 
-  RCLCPP_INFO(this->get_logger(), "Initialized screw move goal at t=%.3f", obs.time);
+  RCLCPP_INFO(this->get_logger(), "Initialized %s goal at t=%.3f", goalTypeName(goal_cfg.trajectory_type), obs.time);
   return true;
 }
 
 void TrajectoryTTActionServerNode::onTrackingStatus(const std::string& status) {
-  std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle;
+  ActiveGoalPtr goal_handle;
+  GoalConfig goal_cfg;
   bool goal_started = false;
   {
     std::lock_guard<std::mutex> lock(stateMtx_);
     monitorSnapshot_.status = status;
     if (!activeGoal_) return;
     goal_handle = activeGoal_;
+    goal_cfg = goal_handle->goalConfig();
     goal_started = goalPublishingStarted_;
   }
   if (!goal_started) return;
@@ -151,19 +576,19 @@ void TrajectoryTTActionServerNode::onTrackingStatus(const std::string& status) {
     }
     startZeroBaseCmdBurst("FINISHED");
     requestSwitchMpcController(/*activate=*/false, "FINISHED");
-    finishGoal(goal_handle, GoalTermination::Succeeded, "FINISHED", "Screw move finished.");
+    finishGoal(goal_handle, GoalTermination::Succeeded, "FINISHED", goalMessage(goal_cfg, "finished."));
   } else if (status == "DIVERGED") {
     if (interveneHoldOnDivergedOrFinished_) {
       publishHoldTrajectory("DIVERGED");
     }
     startZeroBaseCmdBurst("DIVERGED");
     requestSwitchMpcController(/*activate=*/false, "DIVERGED");
-    finishGoal(goal_handle, GoalTermination::Aborted, "DIVERGED", "Tracking diverged during screw move.");
+    finishGoal(goal_handle, GoalTermination::Aborted, "DIVERGED", goalMessage(goal_cfg, "tracking diverged."));
   }
 }
 
 void TrajectoryTTActionServerNode::onTrackingMetric(const std_msgs::msg::Float64MultiArray& msg) {
-  std::shared_ptr<GoalHandleExecuteScrewMove> goal_handle;
+  ActiveGoalPtr goal_handle;
   MonitorSnapshot snapshot;
   {
     std::lock_guard<std::mutex> lock(stateMtx_);
@@ -182,14 +607,10 @@ void TrajectoryTTActionServerNode::onTrackingMetric(const std_msgs::msg::Float64
     snapshot = monitorSnapshot_;
   }
 
-  auto feedback = std::make_shared<ExecuteScrewMove::Feedback>();
-  populateFeedback(*feedback, snapshot);
-  goal_handle->publish_feedback(feedback);
+  goal_handle->publishFeedback(snapshot);
 }
 
-void TrajectoryTTActionServerNode::publishWaitingFeedback(
-    const std::shared_ptr<GoalHandleExecuteScrewMove>& goal_handle,
-    const std::string& status) {
+void TrajectoryTTActionServerNode::publishWaitingFeedback(const ActiveGoalPtr& goal_handle, const std::string& status) {
   const rclcpp::Time now = this->now();
   {
     std::lock_guard<std::mutex> lock(waitingFeedbackMtx_);
@@ -199,50 +620,42 @@ void TrajectoryTTActionServerNode::publishWaitingFeedback(
     lastWaitingFeedbackTime_ = now;
   }
 
-  auto feedback = std::make_shared<ExecuteScrewMove::Feedback>();
-  feedback->tracking_status = status;
-  feedback->progress = 0.0;
-  feedback->pos_err = 0.0;
-  feedback->ori_err_deg = 0.0;
-  feedback->lag_sec = 0.0;
-  feedback->closest_index = 0;
-  goal_handle->publish_feedback(feedback);
+  goal_handle->publishWaitingFeedback(status);
 }
 
-void TrajectoryTTActionServerNode::handleCanceledGoal(const std::shared_ptr<GoalHandleExecuteScrewMove>& goal_handle) {
+void TrajectoryTTActionServerNode::handleCanceledGoal(const ActiveGoalPtr& goal_handle) {
+  const GoalConfig goal_cfg = goal_handle->goalConfig();
   publishHoldTrajectory("CANCELED");
   startZeroBaseCmdBurst("CANCELED");
   requestSwitchMpcController(/*activate=*/false, "CANCELED");
-  finishGoal(goal_handle, GoalTermination::Canceled, "CANCELED", "Screw move canceled.");
+  finishGoal(goal_handle, GoalTermination::Canceled, "CANCELED", goalMessage(goal_cfg, "canceled."));
 }
 
-void TrajectoryTTActionServerNode::finishGoal(const std::shared_ptr<GoalHandleExecuteScrewMove>& goal_handle,
+void TrajectoryTTActionServerNode::finishGoal(const ActiveGoalPtr& goal_handle,
                                               GoalTermination termination,
                                               const std::string& final_status,
                                               const std::string& message) {
   MonitorSnapshot snapshot;
+  GoalConfig goal_cfg;
   {
     std::lock_guard<std::mutex> lock(stateMtx_);
     if (!activeGoal_ || activeGoal_ != goal_handle) return;
     snapshot = monitorSnapshot_;
+    goal_cfg = goal_handle->goalConfig();
     clearActiveGoalLocked();
   }
 
-  auto result = std::make_shared<ExecuteScrewMove::Result>();
-  populateResult(*result, termination == GoalTermination::Succeeded, final_status, message, snapshot);
+  goal_handle->finish(termination, final_status, message, snapshot);
 
   switch (termination) {
     case GoalTermination::Succeeded:
-      goal_handle->succeed(result);
-      RCLCPP_INFO(this->get_logger(), "Screw move goal succeeded.");
+      RCLCPP_INFO(this->get_logger(), "%s goal succeeded.", goalTypeName(goal_cfg.trajectory_type));
       break;
     case GoalTermination::Aborted:
-      goal_handle->abort(result);
-      RCLCPP_WARN(this->get_logger(), "Screw move goal aborted.");
+      RCLCPP_WARN(this->get_logger(), "%s goal aborted.", goalTypeName(goal_cfg.trajectory_type));
       break;
     case GoalTermination::Canceled:
-      goal_handle->canceled(result);
-      RCLCPP_INFO(this->get_logger(), "Screw move goal canceled.");
+      RCLCPP_INFO(this->get_logger(), "%s goal canceled.", goalTypeName(goal_cfg.trajectory_type));
       break;
   }
 }
@@ -260,34 +673,6 @@ void TrajectoryTTActionServerNode::clearActiveGoalLocked() {
   warnedMissingFk_ = false;
   centerP_ = Eigen::Vector3d::Zero();
   q0_ = Eigen::Quaterniond::Identity();
-}
-
-void TrajectoryTTActionServerNode::populateFeedback(ExecuteScrewMove::Feedback& feedback, const MonitorSnapshot& snapshot) {
-  feedback.tracking_status = snapshot.status;
-  feedback.progress = snapshot.progress;
-  feedback.pos_err = snapshot.pos_err;
-  feedback.ori_err_deg = snapshot.ori_err_deg;
-  feedback.lag_sec = snapshot.lag_sec;
-  feedback.closest_index = saturateClosestIndex(snapshot.closest_index);
-}
-
-void TrajectoryTTActionServerNode::populateResult(ExecuteScrewMove::Result& result,
-                                                  bool success,
-                                                  const std::string& final_status,
-                                                  const std::string& message,
-                                                  const MonitorSnapshot& snapshot) {
-  result.success = success;
-  result.final_status = final_status;
-  result.message = message;
-  result.progress = snapshot.progress;
-  result.pos_err = snapshot.pos_err;
-  result.ori_err_deg = snapshot.ori_err_deg;
-  result.lag_sec = snapshot.lag_sec;
-  result.closest_index = saturateClosestIndex(snapshot.closest_index);
-}
-
-uint32_t TrajectoryTTActionServerNode::saturateClosestIndex(std::size_t index) {
-  return static_cast<uint32_t>(std::min<std::size_t>(index, std::numeric_limits<uint32_t>::max()));
 }
 
 bool TrajectoryTTActionServerNode::getDeltaPose(Eigen::Vector3d& dp, Eigen::Quaterniond& dq, const rclcpp::Time& now) const {

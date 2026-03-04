@@ -29,8 +29,10 @@ namespace mpc_cartesian_planner {
 
 using trajectory_tt_action_server_internal::closestWaypointIndexWindow;
 using trajectory_tt_action_server_internal::computeEePose;
+using trajectory_tt_action_server_internal::goalTypeName;
 using trajectory_tt_action_server_internal::sampleTrajectoryAtTime;
 using trajectory_tt_action_server_internal::toLowerCopy;
+using trajectory_tt_action_server_internal::yawToQuaternion;
 
 TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOptions& options)
     : rclcpp::Node("trajectory_tt_action_server", options) {
@@ -43,6 +45,9 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
   this->declare_parameter<std::string>("linearActionName", std::string(""));
   this->declare_parameter<std::string>("targetPoseActionName", std::string(""));
   this->declare_parameter<std::string>("figureEightActionName", std::string(""));
+  this->declare_parameter<std::string>("combinedScrewActionName", std::string(""));
+  this->declare_parameter<std::string>("combinedLinearActionName", std::string(""));
+  this->declare_parameter<std::string>("combinedTargetPoseActionName", std::string(""));
 
   this->declare_parameter<double>("publishRate", 20.0);
   this->declare_parameter<std::string>("referenceTiming", std::string("time"));
@@ -77,6 +82,9 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
   linearActionName_ = this->get_parameter("linearActionName").as_string();
   targetPoseActionName_ = this->get_parameter("targetPoseActionName").as_string();
   figureEightActionName_ = this->get_parameter("figureEightActionName").as_string();
+  combinedScrewActionName_ = this->get_parameter("combinedScrewActionName").as_string();
+  combinedLinearActionName_ = this->get_parameter("combinedLinearActionName").as_string();
+  combinedTargetPoseActionName_ = this->get_parameter("combinedTargetPoseActionName").as_string();
   if (screwActionName_.empty()) {
     screwActionName_ = legacyActionName.empty() ? robotName_ + "/trajectory_tracking/execute_screw_move" : legacyActionName;
   }
@@ -88,6 +96,15 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
   }
   if (figureEightActionName_.empty()) {
     figureEightActionName_ = robotName_ + "/trajectory_tracking/execute_figure_eight";
+  }
+  if (combinedScrewActionName_.empty()) {
+    combinedScrewActionName_ = robotName_ + "/trajectory_tracking/execute_combined_screw_move";
+  }
+  if (combinedLinearActionName_.empty()) {
+    combinedLinearActionName_ = robotName_ + "/trajectory_tracking/execute_combined_linear_move";
+  }
+  if (combinedTargetPoseActionName_.empty()) {
+    combinedTargetPoseActionName_ = robotName_ + "/trajectory_tracking/execute_combined_target_pose";
   }
 
   publishRate_ = this->get_parameter("publishRate").as_double();
@@ -198,14 +215,6 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
         haveObs_ = true;
       });
 
-  trackingStatusSub_ = this->create_subscription<std_msgs::msg::String>(
-      robotName_ + "/trajectory_tracking/tracking_status", rclcpp::QoS(10).reliable(),
-      [this](const std_msgs::msg::String::ConstSharedPtr msg) { onTrackingStatus(msg->data); });
-
-  trackingMetricSub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
-      robotName_ + "/trajectory_tracking/tracking_metric", rclcpp::QoS(10).reliable(),
-      [this](const std_msgs::msg::Float64MultiArray::ConstSharedPtr msg) { onTrackingMetric(*msg); });
-
   screwActionServer_ = rclcpp_action::create_server<ExecuteScrewMove>(
       this,
       screwActionName_,
@@ -230,16 +239,37 @@ TrajectoryTTActionServerNode::TrajectoryTTActionServerNode(const rclcpp::NodeOpt
       std::bind(&TrajectoryTTActionServerNode::handleFigureEightGoal, this, std::placeholders::_1, std::placeholders::_2),
       std::bind(&TrajectoryTTActionServerNode::handleFigureEightCancel, this, std::placeholders::_1),
       std::bind(&TrajectoryTTActionServerNode::handleFigureEightAccepted, this, std::placeholders::_1));
+  combinedScrewActionServer_ = rclcpp_action::create_server<ExecuteCombinedScrewMove>(
+      this,
+      combinedScrewActionName_,
+      std::bind(&TrajectoryTTActionServerNode::handleCombinedScrewGoal, this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&TrajectoryTTActionServerNode::handleCombinedScrewCancel, this, std::placeholders::_1),
+      std::bind(&TrajectoryTTActionServerNode::handleCombinedScrewAccepted, this, std::placeholders::_1));
+  combinedLinearActionServer_ = rclcpp_action::create_server<ExecuteCombinedLinearMove>(
+      this,
+      combinedLinearActionName_,
+      std::bind(&TrajectoryTTActionServerNode::handleCombinedLinearGoal, this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&TrajectoryTTActionServerNode::handleCombinedLinearCancel, this, std::placeholders::_1),
+      std::bind(&TrajectoryTTActionServerNode::handleCombinedLinearAccepted, this, std::placeholders::_1));
+  combinedTargetPoseActionServer_ = rclcpp_action::create_server<ExecuteCombinedTargetPose>(
+      this,
+      combinedTargetPoseActionName_,
+      std::bind(&TrajectoryTTActionServerNode::handleCombinedTargetPoseGoal, this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&TrajectoryTTActionServerNode::handleCombinedTargetPoseCancel, this, std::placeholders::_1),
+      std::bind(&TrajectoryTTActionServerNode::handleCombinedTargetPoseAccepted, this, std::placeholders::_1));
 
   const auto period = std::chrono::duration<double>(1.0 / std::max(1e-6, publishRate_));
   timer_ = this->create_wall_timer(period, std::bind(&TrajectoryTTActionServerNode::onTimer, this));
 
   RCLCPP_INFO(this->get_logger(),
-              "TT action servers ready on %s, %s, %s, %s",
+              "TT action servers ready on %s, %s, %s, %s, %s, %s, %s",
               screwActionName_.c_str(),
               linearActionName_.c_str(),
               targetPoseActionName_.c_str(),
-              figureEightActionName_.c_str());
+              figureEightActionName_.c_str(),
+              combinedScrewActionName_.c_str(),
+              combinedLinearActionName_.c_str(),
+              combinedTargetPoseActionName_.c_str());
 }
 
 void TrajectoryTTActionServerNode::onTimer() {
@@ -273,79 +303,202 @@ void TrajectoryTTActionServerNode::onTimer() {
     return;
   }
 
-  PlannedCartesianTrajectory nominal_traj;
+  PlannedCartesianTrajectory nominal_ee_traj;
+  PlannedBaseTrajectory nominal_base_traj;
+  PlannedJointTrajectory nominal_joint_traj;
+  bool have_ee_traj = false;
+  bool have_base_traj = false;
+  bool have_joint_traj = false;
   {
     std::lock_guard<std::mutex> lock(stateMtx_);
-    if (!activeGoal_ || activeGoal_ != goal_handle || !haveNominalTraj_) return;
-    nominal_traj = nominalTraj_;
+    if (!activeGoal_ || activeGoal_ != goal_handle) return;
+    if ((goal_cfg.ee_mode != GoalChannelMode::Disabled && !haveNominalEeTraj_) ||
+        (goal_cfg.base_mode != GoalChannelMode::Disabled && !haveNominalBaseTraj_)) {
+      return;
+    }
+    nominal_ee_traj = nominalEeTraj_;
+    nominal_base_traj = nominalBaseTraj_;
+    nominal_joint_traj = nominalJointTraj_;
+    have_ee_traj = haveNominalEeTraj_;
+    have_base_traj = haveNominalBaseTraj_;
+    have_joint_traj = haveNominalJointTraj_;
   }
 
-  PlannedCartesianTrajectory traj_with_delta = nominal_traj;
-  applyDeltaPoseToTrajectory(traj_with_delta);
+  PlannedCartesianTrajectory ee_traj = nominal_ee_traj;
+  PlannedBaseTrajectory base_traj = nominal_base_traj;
+  PlannedJointTrajectory joint_traj = nominal_joint_traj;
+  if (goal_cfg.ee_mode == GoalChannelMode::Track && have_ee_traj) {
+    applyDeltaPoseToTrajectory(ee_traj);
+  }
 
-  const PlannedCartesianTrajectory* traj_to_pub = &traj_with_delta;
-  PlannedCartesianTrajectory retimed_traj;
+  PlannedCartesianTrajectory* ee_traj_to_pub = have_ee_traj ? &ee_traj : nullptr;
+  PlannedBaseTrajectory* base_traj_to_pub = have_base_traj ? &base_traj : nullptr;
+  PlannedJointTrajectory* joint_traj_to_pub = have_joint_traj ? &joint_traj : nullptr;
   if (useSpatialProjectionRetime_) {
-    Eigen::Vector3d p_now;
-    Eigen::Quaterniond q_now;
-    bool have_fk = false;
-    if (pin_ && mapping_) {
-      std::lock_guard<std::mutex> lock(pinMtx_);
-      have_fk = computeEePose(*pin_, *mapping_, eeFrameId_, obs.state, p_now, q_now);
-    }
-    if (!have_fk) {
-      bool warn_now = false;
-      {
-        std::lock_guard<std::mutex> lock(stateMtx_);
-        if (!warnedMissingFk_) {
-          warnedMissingFk_ = true;
-          warn_now = true;
+    bool have_shift = false;
+    double shift = 0.0;
+
+    if (goal_cfg.ee_mode == GoalChannelMode::Track && ee_traj_to_pub) {
+      Eigen::Vector3d p_now;
+      Eigen::Quaterniond q_now;
+      bool have_fk = false;
+      if (pin_ && mapping_) {
+        std::lock_guard<std::mutex> lock(pinMtx_);
+        have_fk = computeEePose(*pin_, *mapping_, eeFrameId_, obs.state, p_now, q_now);
+      }
+      if (have_fk) {
+        std::size_t closest_idx = 0;
+        {
+          std::lock_guard<std::mutex> lock(stateMtx_);
+          closest_idx = closestWaypointIndexWindow(
+              *ee_traj_to_pub, p_now, lastEeProjectionIndex_, haveLastEeProjectionIndex_, projectionWindow_, projectionMaxBacktrack_);
+          lastEeProjectionIndex_ = closest_idx;
+          haveLastEeProjectionIndex_ = true;
+        }
+        shift = obs.time - ee_traj_to_pub->time[closest_idx];
+        have_shift = std::isfinite(shift);
+      } else {
+        bool warn_now = false;
+        {
+          std::lock_guard<std::mutex> lock(stateMtx_);
+          if (!warnedMissingFk_) {
+            warnedMissingFk_ = true;
+            warn_now = true;
+          }
+        }
+        if (warn_now) {
+          RCLCPP_WARN(this->get_logger(),
+                      "referenceTiming=spatial_projection requested but EE FK is not available. "
+                      "Trying base projection if a base trajectory is active.");
         }
       }
-      if (warn_now) {
-        RCLCPP_WARN(this->get_logger(),
-                    "referenceTiming=spatial_projection requested but Pinocchio FK is not available. "
-                    "Falling back to time-indexed reference for this goal.");
-      }
-    } else {
-      std::size_t closest_idx = 0;
-      {
-        std::lock_guard<std::mutex> lock(stateMtx_);
-        closest_idx = closestWaypointIndexWindow(
-            traj_with_delta, p_now, lastProjectionIndex_, haveLastProjectionIndex_, projectionWindow_, projectionMaxBacktrack_);
-        lastProjectionIndex_ = closest_idx;
-        haveLastProjectionIndex_ = true;
-      }
+    }
 
-      const double shift = obs.time - traj_with_delta.time[closest_idx];
-      if (std::isfinite(shift)) {
-        retimed_traj = traj_with_delta;
-        for (double& t : retimed_traj.time) {
+    if (!have_shift && goal_cfg.base_mode == GoalChannelMode::Track && base_traj_to_pub) {
+      Eigen::Vector2d p_now = Eigen::Vector2d::Zero();
+      double yaw_now = 0.0;
+      if (getCurrentBasePose(obs, p_now, yaw_now)) {
+        std::size_t closest_idx = 0;
+        {
+          std::lock_guard<std::mutex> lock(stateMtx_);
+          closest_idx = closestWaypointIndexWindow(
+              *base_traj_to_pub, p_now, lastBaseProjectionIndex_, haveLastBaseProjectionIndex_, projectionWindow_, projectionMaxBacktrack_);
+          lastBaseProjectionIndex_ = closest_idx;
+          haveLastBaseProjectionIndex_ = true;
+        }
+        shift = obs.time - base_traj_to_pub->time[closest_idx];
+        have_shift = std::isfinite(shift);
+      } else {
+        bool warn_now = false;
+        {
+          std::lock_guard<std::mutex> lock(stateMtx_);
+          if (!warnedMissingBaseState_) {
+            warnedMissingBaseState_ = true;
+            warn_now = true;
+          }
+        }
+        if (warn_now) {
+          RCLCPP_WARN(this->get_logger(),
+                      "referenceTiming=spatial_projection requested but base state is unavailable. Falling back to time-indexed reference.");
+        }
+      }
+    }
+
+    if (have_shift) {
+      if (ee_traj_to_pub) {
+        for (double& t : ee_traj_to_pub->time) {
           t += shift;
         }
-        traj_to_pub = &retimed_traj;
+      }
+      if (base_traj_to_pub) {
+        for (double& t : base_traj_to_pub->time) {
+          t += shift;
+        }
+      }
+      if (joint_traj_to_pub) {
+        for (double& t : joint_traj_to_pub->time) {
+          t += shift;
+        }
       }
     }
   }
 
   if (publishTF_ && tfBroadcaster_) {
-    Eigen::Vector3d p;
-    Eigen::Quaterniond q;
-    if (sampleTrajectoryAtTime(*traj_to_pub, obs.time, p, q)) {
-      publishCommandTf(p, q);
+    if (ee_traj_to_pub) {
+      Eigen::Vector3d p;
+      Eigen::Quaterniond q;
+      if (sampleTrajectoryAtTime(*ee_traj_to_pub, obs.time, p, q)) {
+        publishCommandTf(p, q);
+      }
+    } else if (base_traj_to_pub) {
+      Eigen::Vector2d p;
+      double yaw = 0.0;
+      if (sampleTrajectoryAtTime(*base_traj_to_pub, obs.time, p, yaw)) {
+        publishCommandTf(Eigen::Vector3d(p.x(), p.y(), 0.0), yawToQuaternion(yaw));
+      }
     }
   }
 
-  trajPub_->publishEeTarget(*traj_to_pub, obs);
+  if (ee_traj_to_pub) {
+    trajPub_->publishEeTarget(*ee_traj_to_pub, obs);
+  }
+  if (base_traj_to_pub) {
+    trajPub_->publishBaseTarget(*base_traj_to_pub, basePoseDim_, baseInputDim_);
+  }
+  if (joint_traj_to_pub) {
+    trajPub_->publishJointTarget(*joint_traj_to_pub);
+  }
   {
     std::lock_guard<std::mutex> lock(stateMtx_);
     if (activeGoal_ == goal_handle) {
-      goalPublishingStarted_ = true;
+      goalPublishingStarted_ = ee_traj_to_pub || base_traj_to_pub || joint_traj_to_pub;
     }
   }
 
   if (publishViz_ && markerPub_ && posePub_) {
-    publishViz(*traj_to_pub, obs.time);
+    if (ee_traj_to_pub) {
+      publishViz(*ee_traj_to_pub, obs.time);
+    } else if (base_traj_to_pub) {
+      publishBaseViz(*base_traj_to_pub, obs.time);
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(stateMtx_);
+    if (eeMonitor_ && ee_traj_to_pub) {
+      eeMonitor_->updateTrajectory(*ee_traj_to_pub);
+    }
+    if (baseMonitor_ && base_traj_to_pub) {
+      baseMonitor_->updateTrajectory(*base_traj_to_pub);
+    }
+    if (!activeGoal_ || activeGoal_ != goal_handle) return;
+    monitorSnapshot_ = computeMonitorSnapshot(goal_cfg, obs, ee_traj_to_pub, base_traj_to_pub);
+  }
+
+  MonitorSnapshot snapshot;
+  {
+    std::lock_guard<std::mutex> lock(stateMtx_);
+    if (!activeGoal_ || activeGoal_ != goal_handle) return;
+    snapshot = monitorSnapshot_;
+  }
+  goal_handle->publishFeedback(snapshot);
+
+  if (snapshot.status == "FINISHED") {
+    if (interveneHoldOnDivergedOrFinished_) {
+      publishHoldTrajectory("FINISHED");
+    }
+    startZeroBaseCmdBurst("FINISHED");
+    requestSwitchMpcController(/*activate=*/false, "FINISHED");
+    finishGoal(goal_handle, GoalTermination::Succeeded, "FINISHED",
+               std::string(goalTypeName(goal_cfg.trajectory_type)) + " finished.");
+  } else if (snapshot.status == "DIVERGED") {
+    if (interveneHoldOnDivergedOrFinished_) {
+      publishHoldTrajectory("DIVERGED");
+    }
+    startZeroBaseCmdBurst("DIVERGED");
+    requestSwitchMpcController(/*activate=*/false, "DIVERGED");
+    finishGoal(goal_handle, GoalTermination::Aborted, "DIVERGED",
+               std::string(goalTypeName(goal_cfg.trajectory_type)) + " tracking diverged.");
   }
 }
 

@@ -34,6 +34,12 @@ enum class GoalTrajectoryType {
   FigureEight
 };
 
+enum class GoalChannelMode {
+  Disabled = 0,
+  HoldCurrent,
+  Track
+};
+
 inline const char* goalTypeName(GoalTrajectoryType type) {
   switch (type) {
     case GoalTrajectoryType::ScrewMove:
@@ -52,6 +58,18 @@ inline std::string toLowerCopy(std::string s) {
   std::transform(s.begin(), s.end(), s.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return s;
+}
+
+inline const char* channelModeName(GoalChannelMode mode) {
+  switch (mode) {
+    case GoalChannelMode::Disabled:
+      return "DISABLED";
+    case GoalChannelMode::HoldCurrent:
+      return "HOLDING";
+    case GoalChannelMode::Track:
+      return "TRACKING";
+  }
+  return "UNKNOWN";
 }
 
 inline TimeScalingType parseTimeScaling(const std::string& s) {
@@ -160,6 +178,43 @@ inline std::size_t closestWaypointIndexWindow(const PlannedCartesianTrajectory& 
   return static_cast<std::size_t>(best_k);
 }
 
+inline std::size_t closestWaypointIndexWindow(const PlannedBaseTrajectory& traj,
+                                              const Eigen::Vector2d& p_now,
+                                              std::size_t last_best,
+                                              bool have_last_best,
+                                              int window,
+                                              int max_backtrack) {
+  if (traj.empty() || traj.position.size() != traj.time.size() || traj.position.size() != traj.yaw.size()) {
+    return 0;
+  }
+
+  const int N = static_cast<int>(traj.size());
+  const int k0 = have_last_best ? static_cast<int>(std::min(last_best, traj.size() - 1)) : 0;
+  const int W = std::max(1, window);
+
+  const int k_min = have_last_best ? std::max(0, k0 - W) : 0;
+  const int k_max = have_last_best ? std::min(N - 1, k0 + W) : (N - 1);
+
+  double best_d2 = std::numeric_limits<double>::infinity();
+  int best_k = k0;
+  for (int k = k_min; k <= k_max; ++k) {
+    const auto& pd = traj.position[static_cast<std::size_t>(k)];
+    const double d2 = (p_now - pd).squaredNorm();
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_k = k;
+    }
+  }
+
+  if (have_last_best) {
+    const int mb = std::max(0, max_backtrack);
+    if (best_k + mb < k0) {
+      best_k = k0;
+    }
+  }
+  return static_cast<std::size_t>(best_k);
+}
+
 inline bool sampleTrajectoryAtTime(const PlannedCartesianTrajectory& traj,
                                    double t,
                                    Eigen::Vector3d& p_out,
@@ -202,11 +257,59 @@ inline bool sampleTrajectoryAtTime(const PlannedCartesianTrajectory& traj,
   return true;
 }
 
+inline double normalizeAngle(double angle) {
+  return std::atan2(std::sin(angle), std::cos(angle));
+}
+
+inline bool sampleTrajectoryAtTime(const PlannedBaseTrajectory& traj,
+                                   double t,
+                                   Eigen::Vector2d& p_out,
+                                   double& yaw_out) {
+  if (traj.empty() || traj.time.size() != traj.position.size() || traj.time.size() != traj.yaw.size()) {
+    return false;
+  }
+
+  if (t <= traj.time.front()) {
+    p_out = traj.position.front();
+    yaw_out = traj.yaw.front();
+    return true;
+  }
+  if (t >= traj.time.back()) {
+    p_out = traj.position.back();
+    yaw_out = traj.yaw.back();
+    return true;
+  }
+
+  const auto it = std::upper_bound(traj.time.begin(), traj.time.end(), t);
+  if (it == traj.time.begin() || it == traj.time.end()) {
+    return false;
+  }
+
+  const std::size_t i1 = static_cast<std::size_t>(it - traj.time.begin());
+  const std::size_t i0 = i1 - 1;
+  const double t0 = traj.time[i0];
+  const double t1 = traj.time[i1];
+  const double denom = t1 - t0;
+  const double alpha = (std::abs(denom) < 1e-12) ? 0.0 : (t - t0) / denom;
+
+  p_out = (1.0 - alpha) * traj.position[i0] + alpha * traj.position[i1];
+  const double dyaw = normalizeAngle(traj.yaw[i1] - traj.yaw[i0]);
+  yaw_out = normalizeAngle(traj.yaw[i0] + alpha * dyaw);
+  return true;
+}
+
+inline Eigen::Quaterniond yawToQuaternion(double yaw) {
+  return Eigen::Quaterniond(Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()));
+}
+
 struct GoalConfig {
   GoalTrajectoryType trajectory_type{GoalTrajectoryType::ScrewMove};
   double duration{0.0};
   double dt{0.0};
   TimeScalingType time_scaling{TimeScalingType::MinJerk};
+
+  GoalChannelMode ee_mode{GoalChannelMode::Track};
+  GoalChannelMode base_mode{GoalChannelMode::Disabled};
 
   Eigen::Vector3d linear_offset{Eigen::Vector3d::Zero()};
   Eigen::Vector3d linear_euler_zyx{Eigen::Vector3d::Zero()};
@@ -224,6 +327,23 @@ struct GoalConfig {
   double figure_eight_amplitude{0.2};
   double figure_eight_frequency{0.1};
   Eigen::Vector3d figure_eight_plane_axis{Eigen::Vector3d::UnitZ()};
+
+  Eigen::Vector3d base_linear_offset{Eigen::Vector3d::Zero()};
+  bool base_linear_in_body_frame{false};
+  Eigen::Vector3d base_target_pose{Eigen::Vector3d::Zero()};
+  Eigen::Vector2d base_screw_r{Eigen::Vector2d::Zero()};
+  double base_screw_theta{0.0};
+  bool base_screw_in_body_frame{true};
+};
+
+struct ChannelMonitorSnapshot {
+  std::string status{"DISABLED"};
+  double progress{0.0};
+  double pos_err{0.0};
+  double ori_err_deg{0.0};
+  double lag_sec{0.0};
+  std::size_t closest_index{0};
+  bool valid{false};
 };
 
 struct MonitorSnapshot {
@@ -234,6 +354,8 @@ struct MonitorSnapshot {
   double lag_sec{0.0};
   std::size_t closest_index{0};
   bool valid{false};
+  ChannelMonitorSnapshot ee;
+  ChannelMonitorSnapshot base;
 };
 
 enum class GoalTermination {

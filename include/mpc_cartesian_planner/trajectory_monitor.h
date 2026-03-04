@@ -66,6 +66,31 @@ class TrajectoryMonitor {
   bool have_last_update_time_{false};
 };
 
+class BaseTrajectoryMonitor {
+ public:
+  explicit BaseTrajectoryMonitor(MonitorParams params);
+
+  void setTrajectory(PlannedBaseTrajectory traj);
+  void updateTrajectory(PlannedBaseTrajectory traj);
+
+  TrackingMetrics update(double t_now,
+                         const Eigen::Vector2d& p_now,
+                         double yaw_now);
+
+  bool hasTrajectory() const { return !traj_.empty(); }
+
+ private:
+  static double orientationErrorDeg(double yaw_des, double yaw);
+
+ private:
+  MonitorParams params_;
+  PlannedBaseTrajectory traj_;
+  std::size_t last_best_{0};
+  double diverged_accum_{0.0};
+  double last_update_time_{0.0};
+  bool have_last_update_time_{false};
+};
+
 std::string toString(TrackingStatus s);
 
 }  // namespace mpc_cartesian_planner

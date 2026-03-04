@@ -56,6 +56,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/ExecuteLinearMove.action"
   "action/ExecuteTargetPose.action"
   "action/ExecuteFigureEight.action"
+  "action/ExecuteCombinedScrewMove.action"
+  "action/ExecuteCombinedLinearMove.action"
+  "action/ExecuteCombinedTargetPose.action"
   DEPENDENCIES action_msgs
 )
 

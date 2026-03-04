@@ -1,0 +1,45 @@
+# Request
+float64 duration
+float64 dt
+string time_scaling
+bool enable_ee
+bool hold_ee
+float64[] ee_target_pose
+bool enable_base
+bool hold_base
+float64[] base_target_pose
+
+---
+
+# Result
+bool success
+string final_status
+string message
+string ee_tracking_status
+float64 ee_progress
+float64 ee_pos_err
+float64 ee_ori_err_deg
+float64 ee_lag_sec
+uint32 ee_closest_index
+string base_tracking_status
+float64 base_progress
+float64 base_pos_err
+float64 base_ori_err_deg
+float64 base_lag_sec
+uint32 base_closest_index
+
+---
+
+# Feedback
+string ee_tracking_status
+float64 ee_progress
+float64 ee_pos_err
+float64 ee_ori_err_deg
+float64 ee_lag_sec
+uint32 ee_closest_index
+string base_tracking_status
+float64 base_progress
+float64 base_pos_err
+float64 base_ori_err_deg
+float64 base_lag_sec
+uint32 base_closest_index

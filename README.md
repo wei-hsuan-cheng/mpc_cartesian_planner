@@ -85,7 +85,7 @@ ros2 service call /mobile_manipulator/trajectory_tracking/toggle_tt_publisher st
 
 If `publishModeScheduleOnEnable: true` (default), the TT publisher also publishes `/<robotName>_mode_schedule` (default: mode `1`) on enable/resume so you don't have to manually publish a `ModeSchedule` before activating `mpc_controller`.
 
-## Cartesian trajectory tracking action examples:
+## EE trajectory tracking action examples:
 
 ```bash
 # Screw move
@@ -135,5 +135,96 @@ ros2 action send_goal \
     amplitude: 0.20,
     frequency: 0.05,
     plane_axis: [1.0, 0.0, 1.0]
+  }"
+```
+
+## Combined EE/base trajectory tracking action examples:
+
+```bash
+# 1) Pure EE TT
+ros2 action send_goal \
+  /mobile_manipulator/trajectory_tracking/execute_target_pose \
+  mpc_cartesian_planner/action/ExecuteTargetPose \
+  "{
+    duration: 5.0,
+    dt: 0.02,
+    time_scaling: min_jerk,
+    target_pose: [0.45, 0.20, 1.0, 0.707, 0.0, 0.0, -0.707]
+  }"
+
+# 2) Pure base TT: absolute SE(2) target pose
+ros2 action send_goal \
+  /mobile_manipulator/trajectory_tracking/execute_combined_target_pose \
+  mpc_cartesian_planner/action/ExecuteCombinedTargetPose \
+  "{
+    duration: 5.0,
+    dt: 0.02,
+    time_scaling: min_jerk,
+    enable_ee: false, hold_ee: false, ee_target_pose: [],
+    enable_base: true, hold_base: false,
+    base_target_pose: [1.0, 0.4, 1.5708]
+  }"
+
+# 3) Pure base TT: relative linear move in base frame [dx, dy, dyaw]
+ros2 action send_goal \
+  /mobile_manipulator/trajectory_tracking/execute_combined_linear_move \
+  mpc_cartesian_planner/action/ExecuteCombinedLinearMove \
+  "{
+    duration: 4.0,
+    dt: 0.02,
+    time_scaling: min_jerk,
+    enable_ee: false, hold_ee: false, ee_linear_move_offset: [],
+    ee_linear_move_in_tool_frame: true,
+    enable_base: true, hold_base: false,
+    base_linear_move_offset: [0.5, 0.0, 0.0],
+    base_linear_move_in_body_frame: true
+  }"
+
+# 4) Fixed EE in space while base moves
+ros2 action send_goal \
+  /mobile_manipulator/trajectory_tracking/execute_combined_linear_move \
+  mpc_cartesian_planner/action/ExecuteCombinedLinearMove \
+  "{
+    duration: 4.0,
+    dt: 0.02,
+    time_scaling: min_jerk,
+    enable_ee: true, hold_ee: true, ee_linear_move_offset: [],
+    ee_linear_move_in_tool_frame: true,
+    enable_base: true, hold_base: false,
+    base_linear_move_offset: [0.4, 0.0, 0.5236],
+    base_linear_move_in_body_frame: true
+  }"
+
+# 5) EE + base combined target pose
+ros2 action send_goal \
+  /mobile_manipulator/trajectory_tracking/execute_combined_target_pose \
+  mpc_cartesian_planner/action/ExecuteCombinedTargetPose \
+  "{
+    duration: 6.0,
+    dt: 0.02,
+    time_scaling: min_jerk,
+    enable_ee: true, hold_ee: false,
+    ee_target_pose: [0.55, -0.05, 0.68, 0.707, 0.0, 0.0, -0.707],
+    enable_base: true, hold_base: false,
+    base_target_pose: [0.8, -0.2, 0.7854]
+  }"
+
+# 6) Pure base screw/arc move
+ros2 action send_goal \
+  /mobile_manipulator/trajectory_tracking/execute_combined_screw_move \
+  mpc_cartesian_planner/action/ExecuteCombinedScrewMove \
+  "{
+    duration: 5.0,
+    dt: 0.02,
+    time_scaling: min_jerk,
+    enable_ee: false, hold_ee: false,
+    ee_screw_uhat: [0.0, 0.0, 1.0],
+    ee_screw_r: [0.0, 0.0, 0.0],
+    ee_screw_theta: 0.0,
+    ee_screw_in_tool_frame: true,
+    enable_base: true, hold_base: false,
+    base_screw_r: [0.0, -0.5],
+    base_screw_theta: 1.5708,
+    base_screw_in_body_frame: true
   }"
 ```

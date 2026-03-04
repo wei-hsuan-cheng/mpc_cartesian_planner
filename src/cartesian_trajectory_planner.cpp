@@ -24,6 +24,19 @@ inline double evalTimeScaling(TimeScalingType type, double tau01) {
   }
 }
 
+inline double normalizeAngle(double angle) {
+  return std::atan2(std::sin(angle), std::cos(angle));
+}
+
+inline Eigen::Matrix2d rot2(double yaw) {
+  const double c = std::cos(yaw);
+  const double s = std::sin(yaw);
+  Eigen::Matrix2d R;
+  R << c, -s,
+       s,  c;
+  return R;
+}
+
 }  // namespace
 
 FigureEightPlanner::FigureEightPlanner(const Eigen::Vector3d& center_p,
@@ -236,6 +249,201 @@ PlannedCartesianTrajectory ScrewMovePlanner::plan(const ocs2::SystemObservation&
     out.time.push_back(tk);
     out.position.push_back(pos_quat_b_ed.pos);
     out.quat.push_back(pos_quat_b_ed.quat.normalized());
+  }
+  return out;
+}
+
+BaseLinearMovePlanner::BaseLinearMovePlanner(const Eigen::Vector2d& start_p,
+                                             double start_yaw,
+                                             BaseLinearMoveParams params)
+    : p0_(start_p), yaw0_(start_yaw), params_(std::move(params)) {
+  Eigen::Vector2d delta_xy = params_.offset.head<2>();
+  if (params_.offset_in_body_frame) {
+    delta_xy = rot2(yaw0_) * delta_xy;
+  }
+  target_p_ = p0_ + delta_xy;
+  target_yaw_ = normalizeAngle(yaw0_ + params_.offset.z());
+}
+
+PlannedBaseTrajectory BaseLinearMovePlanner::plan(const ocs2::SystemObservation& obs) {
+  const double t0 = obs.time;
+  if (!have_start_time_) {
+    start_time_ = t0;
+    have_start_time_ = true;
+  }
+
+  const double dt = std::max(1e-9, params_.dt);
+  const double T = std::max(1e-9, params_.horizon_T);
+  const int N = std::max(1, static_cast<int>(std::ceil(T / dt)));
+
+  PlannedBaseTrajectory out;
+  out.time.reserve(N + 1);
+  out.position.reserve(N + 1);
+  out.yaw.reserve(N + 1);
+
+  const Eigen::Vector2d dp = target_p_ - p0_;
+  const double dyaw = normalizeAngle(target_yaw_ - yaw0_);
+
+  for (int k = 0; k <= N; ++k) {
+    const double tk = t0 + k * dt;
+    const double tau01 = (tk - start_time_) / T;
+    const double s = evalTimeScaling(params_.time_scaling, tau01);
+
+    out.time.push_back(tk);
+    out.position.push_back(p0_ + s * dp);
+    out.yaw.push_back(normalizeAngle(yaw0_ + s * dyaw));
+  }
+  return out;
+}
+
+BaseTargetPosePlanner::BaseTargetPosePlanner(const Eigen::Vector2d& start_p,
+                                             double start_yaw,
+                                             BaseTargetPoseParams params)
+    : p0_(start_p), yaw0_(start_yaw), params_(std::move(params)) {
+  params_.target_pose.z() = normalizeAngle(params_.target_pose.z());
+}
+
+PlannedBaseTrajectory BaseTargetPosePlanner::plan(const ocs2::SystemObservation& obs) {
+  const double t0 = obs.time;
+  if (!have_start_time_) {
+    start_time_ = t0;
+    have_start_time_ = true;
+  }
+
+  const double dt = std::max(1e-9, params_.dt);
+  const double T = std::max(1e-9, params_.horizon_T);
+  const int N = std::max(1, static_cast<int>(std::ceil(T / dt)));
+
+  PlannedBaseTrajectory out;
+  out.time.reserve(N + 1);
+  out.position.reserve(N + 1);
+  out.yaw.reserve(N + 1);
+
+  const Eigen::Vector2d p_goal = params_.target_pose.head<2>();
+  const Eigen::Vector2d dp = p_goal - p0_;
+  const double dyaw = normalizeAngle(params_.target_pose.z() - yaw0_);
+
+  for (int k = 0; k <= N; ++k) {
+    const double tk = t0 + k * dt;
+    const double tau01 = (tk - start_time_) / T;
+    const double s = evalTimeScaling(params_.time_scaling, tau01);
+
+    out.time.push_back(tk);
+    out.position.push_back(p0_ + s * dp);
+    out.yaw.push_back(normalizeAngle(yaw0_ + s * dyaw));
+  }
+  return out;
+}
+
+BaseScrewMovePlanner::BaseScrewMovePlanner(const Eigen::Vector2d& start_p,
+                                           double start_yaw,
+                                           BaseScrewMoveParams params)
+    : p0_(start_p), yaw0_(start_yaw), params_(std::move(params)) {
+  if (params_.expressed_in_body_frame) {
+    center_world_ = p0_ - rot2(yaw0_) * params_.r;
+  } else {
+    center_world_ = p0_ - params_.r;
+  }
+}
+
+PlannedBaseTrajectory BaseScrewMovePlanner::plan(const ocs2::SystemObservation& obs) {
+  const double t0 = obs.time;
+  if (!have_start_time_) {
+    start_time_ = t0;
+    have_start_time_ = true;
+  }
+
+  const double dt = std::max(1e-9, params_.dt);
+  const double T = std::max(1e-9, params_.horizon_T);
+  const int N = std::max(1, static_cast<int>(std::ceil(T / dt)));
+
+  PlannedBaseTrajectory out;
+  out.time.reserve(N + 1);
+  out.position.reserve(N + 1);
+  out.yaw.reserve(N + 1);
+
+  for (int k = 0; k <= N; ++k) {
+    const double tk = t0 + k * dt;
+    const double tau01 = (tk - start_time_) / T;
+    const double s = evalTimeScaling(params_.time_scaling, tau01);
+    const double theta_i = s * params_.theta;
+    const double yaw_i = normalizeAngle(yaw0_ + theta_i);
+
+    Eigen::Vector2d p_i;
+    if (params_.expressed_in_body_frame) {
+      p_i = center_world_ + rot2(yaw_i) * params_.r;
+    } else {
+      p_i = center_world_ + rot2(theta_i) * params_.r;
+    }
+
+    out.time.push_back(tk);
+    out.position.push_back(p_i);
+    out.yaw.push_back(yaw_i);
+  }
+  return out;
+}
+
+PlannedCartesianTrajectory makeConstantCartesianTrajectory(const Eigen::Vector3d& position,
+                                                           const Eigen::Quaterniond& quat,
+                                                           double start_time,
+                                                           double horizon_T,
+                                                           double dt) {
+  const double safe_dt = std::max(1e-9, dt);
+  const double safe_T = std::max(safe_dt, horizon_T);
+  const int N = std::max(1, static_cast<int>(std::ceil(safe_T / safe_dt)));
+
+  PlannedCartesianTrajectory out;
+  out.time.reserve(N + 1);
+  out.position.reserve(N + 1);
+  out.quat.reserve(N + 1);
+
+  const Eigen::Quaterniond q_norm = quat.normalized();
+  for (int k = 0; k <= N; ++k) {
+    out.time.push_back(start_time + k * safe_dt);
+    out.position.push_back(position);
+    out.quat.push_back(q_norm);
+  }
+  return out;
+}
+
+PlannedBaseTrajectory makeConstantBaseTrajectory(const Eigen::Vector2d& position,
+                                                 double yaw,
+                                                 double start_time,
+                                                 double horizon_T,
+                                                 double dt) {
+  const double safe_dt = std::max(1e-9, dt);
+  const double safe_T = std::max(safe_dt, horizon_T);
+  const int N = std::max(1, static_cast<int>(std::ceil(safe_T / safe_dt)));
+
+  PlannedBaseTrajectory out;
+  out.time.reserve(N + 1);
+  out.position.reserve(N + 1);
+  out.yaw.reserve(N + 1);
+
+  const double yaw_norm = normalizeAngle(yaw);
+  for (int k = 0; k <= N; ++k) {
+    out.time.push_back(start_time + k * safe_dt);
+    out.position.push_back(position);
+    out.yaw.push_back(yaw_norm);
+  }
+  return out;
+}
+
+PlannedJointTrajectory makeConstantJointTrajectory(const ocs2::vector_t& position,
+                                                   double start_time,
+                                                   double horizon_T,
+                                                   double dt) {
+  const double safe_dt = std::max(1e-9, dt);
+  const double safe_T = std::max(safe_dt, horizon_T);
+  const int N = std::max(1, static_cast<int>(std::ceil(safe_T / safe_dt)));
+
+  PlannedJointTrajectory out;
+  out.time.reserve(N + 1);
+  out.position.reserve(N + 1);
+
+  for (int k = 0; k <= N; ++k) {
+    out.time.push_back(start_time + k * safe_dt);
+    out.position.push_back(position);
   }
   return out;
 }

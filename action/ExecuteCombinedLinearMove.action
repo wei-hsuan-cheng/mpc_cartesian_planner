@@ -1,0 +1,47 @@
+# Request
+float64 duration
+float64 dt
+string time_scaling
+bool enable_ee
+bool hold_ee
+float64[] ee_linear_move_offset
+bool ee_linear_move_in_tool_frame
+bool enable_base
+bool hold_base
+float64[3] base_linear_move_offset
+bool base_linear_move_in_body_frame
+
+---
+
+# Result
+bool success
+string final_status
+string message
+string ee_tracking_status
+float64 ee_progress
+float64 ee_pos_err
+float64 ee_ori_err_deg
+float64 ee_lag_sec
+uint32 ee_closest_index
+string base_tracking_status
+float64 base_progress
+float64 base_pos_err
+float64 base_ori_err_deg
+float64 base_lag_sec
+uint32 base_closest_index
+
+---
+
+# Feedback
+string ee_tracking_status
+float64 ee_progress
+float64 ee_pos_err
+float64 ee_ori_err_deg
+float64 ee_lag_sec
+uint32 ee_closest_index
+string base_tracking_status
+float64 base_progress
+float64 base_pos_err
+float64 base_ori_err_deg
+float64 base_lag_sec
+uint32 base_closest_index

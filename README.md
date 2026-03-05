@@ -141,7 +141,7 @@ ros2 action send_goal \
 ## Combined EE/base trajectory tracking action examples:
 
 ```bash
-# 1) Pure EE TT: unchanged
+# 1) Pure EE TT
 ros2 action send_goal \
   /mobile_manipulator/trajectory_tracking/execute_target_pose \
   mpc_cartesian_planner/action/ExecuteTargetPose \
@@ -160,7 +160,10 @@ ros2 action send_goal \
     duration: 5.0,
     dt: 0.02,
     time_scaling: min_jerk,
-    enable_ee: false, hold_ee: false, ee_target_pose: [],
+
+    enable_ee: false, hold_ee: false, 
+    ee_target_pose: [],
+    
     enable_base: true, hold_base: false,
     base_target_pose: [1.0, 0.4, 1.5708]
   }"
@@ -173,8 +176,11 @@ ros2 action send_goal \
     duration: 4.0,
     dt: 0.02,
     time_scaling: min_jerk,
-    enable_ee: false, hold_ee: false, ee_linear_move_offset: [],
+
+    enable_ee: false, hold_ee: false, 
+    ee_linear_move_offset: [],
     ee_linear_move_in_tool_frame: true,
+
     enable_base: true, hold_base: false,
     base_linear_move_offset: [0.5, 0.0, 0.0],
     base_linear_move_in_body_frame: true
@@ -188,11 +194,13 @@ ros2 action send_goal \
     duration: 20.0,
     dt: 0.1,
     time_scaling: min_jerk,
+
     enable_ee: false, hold_ee: false,
     ee_screw_uhat: [0.0, 0.0, 1.0],
     ee_screw_r: [0.0, 0.0, 0.0],
     ee_screw_theta: 0.0,
     ee_screw_in_tool_frame: true,
+
     enable_base: true, hold_base: false,
     base_screw_r: [0.0, -0.5],
     base_screw_theta: 6.28,
@@ -207,8 +215,11 @@ ros2 action send_goal \
     duration: 4.0,
     dt: 0.02,
     time_scaling: min_jerk,
-    enable_ee: true, hold_ee: true, ee_linear_move_offset: [],
+
+    enable_ee: true, hold_ee: true, 
+    ee_linear_move_offset: [],
     ee_linear_move_in_tool_frame: true,
+
     enable_base: true, hold_base: false,
     base_linear_move_offset: [0.4, 0.0, 0.5236],
     base_linear_move_in_body_frame: true
@@ -222,8 +233,10 @@ ros2 action send_goal \
     duration: 6.0,
     dt: 0.02,
     time_scaling: min_jerk,
+
     enable_ee: true, hold_ee: false,
     ee_target_pose: [0.55, -0.05, 0.68, 0.707, 0.0, 0.0, -0.707],
+    
     enable_base: true, hold_base: false,
     base_target_pose: [0.8, -0.2, 0.7854]
   }"

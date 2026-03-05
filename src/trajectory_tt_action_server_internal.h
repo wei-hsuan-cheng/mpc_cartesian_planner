@@ -294,7 +294,8 @@ inline bool sampleTrajectoryAtTime(const PlannedBaseTrajectory& traj,
 
   p_out = (1.0 - alpha) * traj.position[i0] + alpha * traj.position[i1];
   const double dyaw = normalizeAngle(traj.yaw[i1] - traj.yaw[i0]);
-  yaw_out = normalizeAngle(traj.yaw[i0] + alpha * dyaw);
+  // Keep sampled yaw continuous; orientation wrapping belongs at error computation.
+  yaw_out = traj.yaw[i0] + alpha * dyaw;
   return true;
 }
 

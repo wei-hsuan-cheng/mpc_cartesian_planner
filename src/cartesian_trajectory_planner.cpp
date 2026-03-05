@@ -291,7 +291,8 @@ PlannedBaseTrajectory BaseLinearMovePlanner::plan(const ocs2::SystemObservation&
 
     out.time.push_back(tk);
     out.position.push_back(p0_ + s * dp);
-    out.yaw.push_back(normalizeAngle(yaw0_ + s * dyaw));
+    // Keep yaw continuous to avoid +/-pi branch-cut jumps in published targets.
+    out.yaw.push_back(yaw0_ + s * dyaw);
   }
   return out;
 }
@@ -330,7 +331,8 @@ PlannedBaseTrajectory BaseTargetPosePlanner::plan(const ocs2::SystemObservation&
 
     out.time.push_back(tk);
     out.position.push_back(p0_ + s * dp);
-    out.yaw.push_back(normalizeAngle(yaw0_ + s * dyaw));
+    // Keep yaw continuous to avoid +/-pi branch-cut jumps in published targets.
+    out.yaw.push_back(yaw0_ + s * dyaw);
   }
   return out;
 }
@@ -367,7 +369,8 @@ PlannedBaseTrajectory BaseScrewMovePlanner::plan(const ocs2::SystemObservation& 
     const double tau01 = (tk - start_time_) / T;
     const double s = evalTimeScaling(params_.time_scaling, tau01);
     const double theta_i = s * params_.theta;
-    const double yaw_i = normalizeAngle(yaw0_ + theta_i);
+    // Keep yaw continuous to avoid +/-pi branch-cut jumps in published targets.
+    const double yaw_i = yaw0_ + theta_i;
 
     Eigen::Vector2d p_i;
     if (params_.expressed_in_body_frame) {
@@ -420,11 +423,11 @@ PlannedBaseTrajectory makeConstantBaseTrajectory(const Eigen::Vector2d& position
   out.position.reserve(N + 1);
   out.yaw.reserve(N + 1);
 
-  const double yaw_norm = normalizeAngle(yaw);
   for (int k = 0; k <= N; ++k) {
     out.time.push_back(start_time + k * safe_dt);
     out.position.push_back(position);
-    out.yaw.push_back(yaw_norm);
+    // Preserve continuity of the current/base hold heading.
+    out.yaw.push_back(yaw);
   }
   return out;
 }
